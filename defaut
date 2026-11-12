@@ -1,47 +1,292 @@
+-- Auto Collect - Drill to Earth - Delta Executor
+-- Scan complet du workspace + multi-méthodes de pickup
+
 local Players = game:GetService("Players")
-local player = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HelloTestGui"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = player:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
-local Frame = Instance.new("Frame")
-Frame.Size = UDim2.new(0, 300, 0, 160)
-Frame.Position = UDim2.new(0.5, -150, 0.5, -80)
-Frame.BackgroundColor3 = Color3.fromRGB(110, 45, 180)
-Frame.BorderSizePixel = 0
-Frame.Parent = ScreenGui
+-- ============ CONFIG ============
+local CONFIG = {
+    Enabled = true,
+    Range = 100,
+    Delay = 0.2,
+    TeleportMode = false,     -- true = téléporte vers les items, false = reste sur place
+    ScanAllWorkspace = true,  -- scan tout, pas juste des dossiers spécifiques
+}
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 12)
-Corner.Parent = Frame
+-- Mots-clés pour identifier les items ramassables dans le jeu
+local ITEM_KEYWORDS = {
+    "ore", "gem", "diamond", "gold", "iron", "copper", "coal", "emerald",
+    "ruby", "sapphire", "crystal", "drop", "loot", "collect", "pick",
+    "stone", "rock", "mineral", "treasure", "coin", "cash", "money",
+    "block", "chunk", "shard", "piece", "reward", "prize"
+}
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -45, 1, 0)
-Title.Position = UDim2.new(0, 10, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "hello test"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 28
-Title.Font = Enum.Font.GothamBold
-Title.Parent = Frame
+-- Mots à exclure (décor, terrain, etc.)
+local EXCLUDE_KEYWORDS = {
+    "baseplate", "spawn", "terrain", "camera", "light", "decal",
+    "texture", "sound", "particle", "ui", "gui", "background"
+}
 
-local Close = Instance.new("TextButton")
-Close.Size = UDim2.new(0, 35, 0, 35)
-Close.Position = UDim2.new(1, -40, 0, 5)
-Close.BackgroundColor3 = Color3.fromRGB(75, 25, 120)
-Close.Text = "X"
-Close.TextColor3 = Color3.fromRGB(255, 255, 255)
-Close.TextSize = 18
-Close.Font = Enum.Font.GothamBold
-Close.Parent = Frame
+-- ============ FONCTIONS DE DÉTECTION ============
 
-local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 8)
-CloseCorner.Parent = Close
+local function isExcluded(name)
+    local lowerName = string.lower(name)
+    for _, keyword in ipairs(EXCLUDE_KEYWORDS) do
+        if string.find(lowerName, keyword) then
+            return true
+        end
+    end
+    return false
+end
 
-Close.MouseButton1Click:Connect(function()
-    ScreenGui:Destroy()
-    script:Destroy()
+local function isCollectible(obj)
+    if not obj or not obj.Parent then return false end
+    if isExcluded(obj.Name) then return false end
+
+    local lowerName = string.lower(obj.Name)
+
+    -- Vérifie par mots-clés
+    for _, keyword in ipairs(ITEM_KEYWORDS) do
+        if string.find(lowerName, keyword) then
+            return true
+        end
+    end
+
+    -- Vérifie si c'est un Tool (les items sont souvent des Tools)
+    if obj:IsA("Tool") then
+        return true
+    end
+
+    -- Vérifie si l'objet a un ProximityPrompt (système de ramassage moderne)
+    if obj:FindFirstChildWhichIsA("ProximityPrompt", true) then
+        return true
+    end
+
+    -- Vérifie si l'objet a un ClickDetector
+    if obj:FindFirstChildWhichIsA("ClickDetector", true) then
+        return true
+    end
+
+    -- Vérifie si l'objet a un TouchInterest (déclencheur de contact)
+    if obj:IsA("BasePart") and obj:FindFirstChildWhichIsA("TouchTransmitter") then
+        return true
+    end
+
+    return false
+end
+
+-- ============ TROUVER LES ITEMS ============
+
+local function getPosition(obj)
+    if obj:IsA("BasePart") then
+        return obj.Position
+    elseif obj:IsA("Model") then
+        local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+        if primary then return primary.Position end
+    elseif obj:IsA("Tool") then
+        local handle = obj:FindFirstChild("Handle")
+        if handle and handle:IsA("BasePart") then return handle.Position end
+    end
+    return nil
+end
+
+local function findItems()
+    local items = {}
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if isCollectible(obj) then
+            local pos = getPosition(obj)
+            if pos then
+                local distance = (pos - HumanoidRootPart.Position).Magnitude
+                if distance <= CONFIG.Range then
+                    table.insert(items, {
+                        object = obj,
+                        position = pos,
+                        distance = distance
+                    })
+                end
+            end
+        end
+    end
+
+    -- Trier par distance
+    table.sort(items, function(a, b) return a.distance < b.distance end)
+    return items
+end
+
+-- ============ MÉTHODES DE PICKUP ============
+
+-- Méthode 1 : ProximityPrompt
+local function pickupProximity(obj)
+    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt and fireproximityprompt then
+        fireproximityprompt(prompt)
+        return true
+    end
+    return false
+end
+
+-- Méthode 2 : Touch (FireTouchInterest)
+local function pickupTouch(obj)
+    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
+    if part and firetouchinterest then
+        firetouchinterest(HumanoidRootPart, part, 0)
+        task.wait(0.05)
+        firetouchinterest(HumanoidRootPart, part, 1)
+        return true
+    elseif part then
+        -- Fallback sans firetouchinterest
+        part.CanTouch = true
+        local connection = part.Touched:Connect(function() end)
+        connection:Disconnect()
+        return true
+    end
+    return false
+end
+
+-- Méthode 3 : ClickDetector
+local function pickupClick(obj)
+    local detector = obj:FindFirstChildWhichIsA("ClickDetector", true)
+    if detector and fireclickdetector then
+        fireclickdetector(detector)
+        return true
+    end
+    return false
+end
+
+-- Méthode 4 : Chercher RemoteEvents dans ReplicatedStorage liés au pickup
+local function tryRemotePickup()
+    -- Cherche des remotes courants pour les jeux de minage
+    local remoteNames = {"CollectItem", "PickupItem", "CollectDrop", "PickUp", "GrabItem", "Collect"}
+
+    for _, name in ipairs(remoteNames) do
+        local remote = ReplicatedStorage:FindFirstChild(name, true)
+        if remote and remote:IsA("RemoteEvent") then
+            -- Essaye de fire avec différents arguments
+            pcall(function() remote:FireServer() end)
+            pcall(function() remote:FireServer("all") end)
+        end
+    end
+
+    -- Scan des remotes dans le jeu
+    for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
+        if remote:IsA("RemoteEvent") then
+            local lowerName = string.lower(remote.Name)
+            if string.find(lowerName, "collect") or string.find(lowerName, "pick") or string.find(lowerName, "grab") then
+                pcall(function() remote:FireServer() end)
+            end
+        end
+    end
+end
+
+-- Méthode 5 : Téléport vers l'item
+local function teleportTo(objPos)
+    if CONFIG.TeleportMode then
+        local originalCFrame = HumanoidRootPart.CFrame
+        HumanoidRootPart.CFrame = CFrame.new(objPos + Vector3.new(0, 3, 0))
+        task.wait(0.15)
+        HumanoidRootPart.CFrame = originalCFrame
+    end
+end
+
+-- ============ SYSTÈME DE SCAN DES REMOTES ============
+-- Trouve automatiquement les RemoteEvents utilisés pour collecter
+
+local function discoverRemotes()
+    local found = {}
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local lowerName = string.lower(obj.Name)
+            if string.find(lowerName, "collect") or
+               string.find(lowerName, "pickup") or
+               string.find(lowerName, "grab") or
+               string.find(lowerName, "take") or
+               string.find(lowerName, "claim") then
+                table.insert(found, obj)
+            end
+        end
+    end
+    return found
+end
+
+-- Affiche les remotes trouvés dans la console pour debug
+task.spawn(function()
+    local remotes = discoverRemotes()
+    print("=== Drill to Earth - Remotes trouvés ===")
+    for _, r in ipairs(remotes) do
+        print("Remote: " .. r:GetFullName() .. " (" .. r.ClassName .. ")")
+    end
 end)
+
+-- ============ BOUCLE PRINCIPALE ============
+
+task.spawn(function()
+    while CONFIG.Enabled do
+        local success, err = pcall(function()
+            local items = findItems()
+
+            for _, itemData in ipairs(items) do
+                if not CONFIG.Enabled then break end
+
+                local obj = itemData.object
+
+                -- Skip si l'objet a disparu
+                if not obj.Parent then continue end
+
+                -- Téléporter si activé
+                teleportTo(itemData.position)
+
+                -- Essaie chaque méthode
+                local collected = false
+
+                if pickupProximity(obj) then
+                    collected = true
+                end
+
+                if not collected and pickupTouch(obj) then
+                    collected = true
+                end
+
+                if not collected and pickupClick(obj) then
+                    collected = true
+                end
+
+                task.wait(CONFIG.Delay)
+            end
+
+            -- Essaie aussi les RemoteEvents directement
+            tryRemotePickup()
+        end)
+
+        if not success then
+            warn("Erreur dans la boucle: " .. tostring(err))
+        end
+
+        task.wait(0.5)
+    end
+end)
+
+-- ============ RÉINITIALISATION SUR RESPAWN ============
+
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    HumanoidRootPart = newChar:WaitForChild("HumanoidRootPart")
+end)
+
+-- ============ NOTIFICATION ============
+
+game:GetService("StarterGui"):SetCore("SendNotification", {
+    Title = "Drill to Earth — Auto Collect",
+    Text = "Script chargé. Range: " .. CONFIG.Range .. " studs",
+    Duration = 5
+})
+
+print("[Auto Collect] Chargé — Drill to Earth")
+print("[Auto Collect] Range: " .. CONFIG.Range)
+print("[Auto Collect] Teleport: " .. tostring(CONFIG.TeleportMode))
