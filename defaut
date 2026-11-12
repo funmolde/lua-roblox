@@ -1,292 +1,566 @@
--- Auto Collect - Drill to Earth - Delta Executor
--- Scan complet du workspace + multi-méthodes de pickup
-
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local StarterGui = game:GetService("StarterGui")
+local StarterPack = game:GetService("StarterPack")
+local StarterPlayer = game:GetService("StarterPlayer")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
-local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
 
--- ============ CONFIG ============
-local CONFIG = {
-    Enabled = true,
-    Range = 100,
-    Delay = 0.2,
-    TeleportMode = false,     -- true = téléporte vers les items, false = reste sur place
-    ScanAllWorkspace = true,  -- scan tout, pas juste des dossiers spécifiques
+-- ============ STOCKAGE DES RÉSULTATS ============
+
+local RESULTS = {
+    MODELS = {},
+    PARTS = {},
+    TOOLS = {},
+    REMOTE_EVENTS = {},
+    REMOTE_FUNCTIONS = {},
+    SCRIPTS = {},
+    LOCAL_SCRIPTS = {},
+    MODULE_SCRIPTS = {},
+    SOUNDS = {},
+    LIGHTS = {},
+    GUI = {},
+    FOLDERS = {},
+    ANIMATIONS = {},
+    PARTICLES = {},
+    MESHES = {},
+    DECALS = {},
+    CLICK_DETECTORS = {},
+    PROXIMITY_PROMPTS = {},
+    BEAMS = {},
+    TRAILS = {},
+    VALUES = {},
+    OTHER = {}
 }
 
--- Mots-clés pour identifier les items ramassables dans le jeu
-local ITEM_KEYWORDS = {
-    "ore", "gem", "diamond", "gold", "iron", "copper", "coal", "emerald",
-    "ruby", "sapphire", "crystal", "drop", "loot", "collect", "pick",
-    "stone", "rock", "mineral", "treasure", "coin", "cash", "money",
-    "block", "chunk", "shard", "piece", "reward", "prize"
-}
+-- ============ FONCTION DE CLASSIFICATION ============
 
--- Mots à exclure (décor, terrain, etc.)
-local EXCLUDE_KEYWORDS = {
-    "baseplate", "spawn", "terrain", "camera", "light", "decal",
-    "texture", "sound", "particle", "ui", "gui", "background"
-}
-
--- ============ FONCTIONS DE DÉTECTION ============
-
-local function isExcluded(name)
-    local lowerName = string.lower(name)
-    for _, keyword in ipairs(EXCLUDE_KEYWORDS) do
-        if string.find(lowerName, keyword) then
-            return true
-        end
-    end
-    return false
-end
-
-local function isCollectible(obj)
-    if not obj or not obj.Parent then return false end
-    if isExcluded(obj.Name) then return false end
-
-    local lowerName = string.lower(obj.Name)
-
-    -- Vérifie par mots-clés
-    for _, keyword in ipairs(ITEM_KEYWORDS) do
-        if string.find(lowerName, keyword) then
-            return true
-        end
-    end
-
-    -- Vérifie si c'est un Tool (les items sont souvent des Tools)
-    if obj:IsA("Tool") then
-        return true
-    end
-
-    -- Vérifie si l'objet a un ProximityPrompt (système de ramassage moderne)
-    if obj:FindFirstChildWhichIsA("ProximityPrompt", true) then
-        return true
-    end
-
-    -- Vérifie si l'objet a un ClickDetector
-    if obj:FindFirstChildWhichIsA("ClickDetector", true) then
-        return true
-    end
-
-    -- Vérifie si l'objet a un TouchInterest (déclencheur de contact)
-    if obj:IsA("BasePart") and obj:FindFirstChildWhichIsA("TouchTransmitter") then
-        return true
-    end
-
-    return false
-end
-
--- ============ TROUVER LES ITEMS ============
-
-local function getPosition(obj)
-    if obj:IsA("BasePart") then
-        return obj.Position
-    elseif obj:IsA("Model") then
-        local primary = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-        if primary then return primary.Position end
+local function classify(obj)
+    if obj:IsA("Model") then
+        table.insert(RESULTS.MODELS, obj:GetFullName())
+    elseif obj:IsA("BasePart") then
+        table.insert(RESULTS.PARTS, obj:GetFullName())
     elseif obj:IsA("Tool") then
-        local handle = obj:FindFirstChild("Handle")
-        if handle and handle:IsA("BasePart") then return handle.Position end
+        table.insert(RESULTS.TOOLS, obj:GetFullName())
+    elseif obj:IsA("RemoteEvent") then
+        table.insert(RESULTS.REMOTE_EVENTS, obj:GetFullName())
+    elseif obj:IsA("RemoteFunction") then
+        table.insert(RESULTS.REMOTE_FUNCTIONS, obj:GetFullName())
+    elseif obj:IsA("Script") then
+        table.insert(RESULTS.SCRIPTS, obj:GetFullName())
+    elseif obj:IsA("LocalScript") then
+        table.insert(RESULTS.LOCAL_SCRIPTS, obj:GetFullName())
+    elseif obj:IsA("ModuleScript") then
+        table.insert(RESULTS.MODULE_SCRIPTS, obj:GetFullName())
+    elseif obj:IsA("Sound") then
+        table.insert(RESULTS.SOUNDS, obj:GetFullName())
+    elseif obj:IsA("Light") or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+        table.insert(RESULTS.LIGHTS, obj:GetFullName() .. " [Range: " .. tostring(obj.Range or "N/A") .. "]")
+    elseif obj:IsA("ScreenGui") or obj:IsA("Frame") or obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("ImageLabel") then
+        table.insert(RESULTS.GUI, obj:GetFullName())
+    elseif obj:IsA("Folder") then
+        table.insert(RESULTS.FOLDERS, obj:GetFullName())
+    elseif obj:IsA("Animation") or obj:IsA("AnimationTrack") then
+        table.insert(RESULTS.ANIMATIONS, obj:GetFullName())
+    elseif obj:IsA("ParticleEmitter") then
+        table.insert(RESULTS.PARTICLES, obj:GetFullName())
+    elseif obj:IsA("SpecialMesh") or obj:IsA("FileMesh") or obj:IsA("BlockMesh") or obj:IsA("CylinderMesh") then
+        table.insert(RESULTS.MESHES, obj:GetFullName())
+    elseif obj:IsA("Decal") or obj:IsA("Texture") then
+        table.insert(RESULTS.DECALS, obj:GetFullName())
+    elseif obj:IsA("ClickDetector") then
+        table.insert(RESULTS.CLICK_DETECTORS, obj:GetFullName())
+    elseif obj:IsA("ProximityPrompt") then
+        table.insert(RESULTS.PROXIMITY_PROMPTS, obj:GetFullName())
+    elseif obj:IsA("Beam") then
+        table.insert(RESULTS.BEAMS, obj:GetFullName())
+    elseif obj:IsA("Trail") then
+        table.insert(RESULTS.TRAILS, obj:GetFullName())
+    elseif obj:IsA("IntValue") or obj:IsA("StringValue") or obj:IsA("BoolValue") or obj:IsA("NumberValue") or obj:IsA("ObjectValue") or obj:IsA("Vector3Value") or obj:IsA("CFrameValue") then
+        local value = "?"
+        pcall(function() value = tostring(obj.Value) end)
+        table.insert(RESULTS.VALUES, obj:GetFullName() .. " = " .. value)
+    else
+        table.insert(RESULTS.OTHER, obj:GetFullName() .. " [" .. obj.ClassName .. "]")
     end
-    return nil
 end
 
-local function findItems()
-    local items = {}
+-- ============ SCAN DES SERVICES PRINCIPAUX ============
+
+local servicesToScan = {
+    {name = "Workspace", service = Workspace},
+    {name = "ReplicatedStorage", service = ReplicatedStorage},
+    {name = "StarterGui", service = StarterGui},
+    {name = "StarterPack", service = StarterPack},
+    {name = "Lighting", service = Lighting},
+    {name = "SoundService", service = SoundService},
+}
+
+-- ============ SCAN DU PERSONNAGE ============
+
+local function scanCharacter()
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    print("\n╔══════════════════════════════════════╗")
+    print("║       PERSONNAGE DU JOUEUR            ║")
+    print("╚══════════════════════════════════════╝")
+
+    for _, obj in ipairs(char:GetDescendants()) do
+        print("  [" .. obj.ClassName .. "] " .. obj.Name)
+    end
+
+    -- Backpack
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        print("\n--- BACKPACK ---")
+        for _, obj in ipairs(backpack:GetChildren()) do
+            print("  [" .. obj.ClassName .. "] " .. obj.Name)
+            if obj:IsA("Tool") then
+                for _, sub in ipairs(obj:GetChildren()) do
+                    print("    └─ [" .. sub.ClassName .. "] " .. sub.Name)
+                end
+            end
+        end
+    end
+
+    -- PlayerGui
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if playerGui then
+        print("\n--- PLAYER GUI ---")
+        for _, obj in ipairs(playerGui:GetDescendants()) do
+            if obj:IsA("ScreenGui") then
+                print("  ScreenGui: " .. obj.Name)
+            elseif obj:IsA("Frame") then
+                print("    Frame: " .. obj.Name)
+            elseif obj:IsA("TextButton") then
+                print("    Button: " .. obj.Name)
+            elseif obj:IsA("TextLabel") then
+                print("    Label: " .. obj.Name)
+            elseif obj:IsA("LocalScript") then
+                print("    LocalScript: " .. obj.Name)
+            end
+        end
+    end
+end
+
+-- ============ SCAN DES PARAMÈTRES DU JEU ============
+
+local function scanGameSettings()
+    print("\n╔══════════════════════════════════════╗")
+    print("║       PARAMÈTRES DU JEU              ║")
+    print("╚══════════════════════════════════════╝")
+
+    -- Lighting
+    print("\n--- LIGHTING ---")
+    print("  Ambient: " .. tostring(Lighting.Ambient))
+    print("  Brightness: " .. tostring(Lighting.Brightness))
+    print("  ColorShift_Bottom: " .. tostring(Lighting.ColorShift_Bottom))
+    print("  ColorShift_Top: " .. tostring(Lighting.ColorShift_Top))
+    print("  EnvironmentDiffuseScale: " .. tostring(Lighting.EnvironmentDiffuseScale))
+    print("  EnvironmentSpecularScale: " .. tostring(Lighting.EnvironmentSpecularScale))
+    print("  GlobalShadows: " .. tostring(Lighting.GlobalShadows))
+    print("  OutdoorAmbient: " .. tostring(Lighting.OutdoorAmbient))
+    print("  FogColor: " .. tostring(Lighting.FogColor))
+    print("  FogEnd: " .. tostring(Lighting.FogEnd))
+    print("  FogStart: " .. tostring(Lighting.FogStart))
+    print("  GeographicLatitude: " .. tostring(Lighting.GeographicLatitude))
+    print("  TimeOfDay: " .. tostring(Lighting.TimeOfDay))
+    print("  ClockTime: " .. tostring(Lighting.ClockTime))
+
+    -- Workspace settings
+    print("\n--- WORKSPACE ---")
+    print("  Gravity: " .. tostring(Workspace.Gravity))
+    print("  StreamingEnabled: " .. tostring(Workspace.StreamingEnabled))
+
+    -- Place info
+    print("\n--- PLACE INFO ---")
+    print("  PlaceId: " .. tostring(game.PlaceId))
+    print("  JobId: " .. tostring(game.JobId))
+    print("  GameName: " .. tostring(game.Name))
+    print("  CreatorId: " .. tostring(game.CreatorId))
+end
+
+-- ============ SCAN DES REMOTES (CRUCIAL) ============
+
+local function scanRemotes()
+    print("\n╔══════════════════════════════════════╗")
+    print("║    REMOTE EVENTS & FUNCTIONS          ║")
+    print("╚══════════════════════════════════════╝")
+
+    -- ReplicatedStorage
+    print("\n--- REPLICATED STORAGE ---")
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") then
+            print("  [RemoteEvent] " .. obj:GetFullName())
+        elseif obj:IsA("RemoteFunction") then
+            print("  [RemoteFunction] " .. obj:GetFullName())
+        elseif obj:IsA("UnreliableRemoteEvent") then
+            print("  [UnreliableRemote] " .. obj:GetFullName())
+        end
+    end
+
+    -- Workspace remotes
+    print("\n--- WORKSPACE ---")
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("RemoteEvent") then
+            print("  [RemoteEvent] " .. obj:GetFullName())
+        elseif obj:IsA("RemoteFunction") then
+            print("  [RemoteFunction] " .. obj:GetFullName())
+        end
+    end
+
+    -- Players remotes
+    print("\n--- PLAYERS ---")
+    for _, obj in ipairs(LocalPlayer:GetDescendants()) do
+        if obj:IsA("RemoteEvent") then
+            print("  [RemoteEvent] " .. obj:GetFullName())
+        elseif obj:IsA("RemoteFunction") then
+            print("  [RemoteFunction] " .. obj:GetFullName())
+        end
+    end
+end
+
+-- ============ SCAN DES SCRIPTS ============
+
+local function scanScripts()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         SCRIPTS DÉTECTÉS              ║")
+    print("╚══════════════════════════════════════╝")
+
+    print("\n--- SCRIPTS (Server) ---")
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Script") then
+            print("  " .. obj:GetFullName())
+        end
+    end
+
+    print("\n--- LOCAL SCRIPTS (Client) ---")
+    for _, obj in ipairs(LocalPlayer:GetDescendants()) do
+        if obj:IsA("LocalScript") then
+            print("  " .. obj:GetFullName())
+        end
+    end
+
+    print("\n--- MODULE SCRIPTS ---")
+    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("ModuleScript") then
+            print("  " .. obj:GetFullName())
+        end
+    end
+end
+
+-- ============ SCAN COMPLET DU WORKSPACE ============
+
+local function scanWorkspace()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         WORKSPACE COMPLET             ║")
+    print("╚══════════════════════════════════════╝")
+
+    local count = 0
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        classify(obj)
+        count = count + 1
+    end
+    print("  Total objets scannés: " .. count)
+end
+
+-- ============ SCAN DES DOSSIERS PRINCIPAUX ============
+
+local function scanMainFolders()
+    print("\n╔══════════════════════════════════════╗")
+    print("║    STRUCTURE DOSSIERS / HIÉRARCHIE    ║")
+    print("╚══════════════════════════════════════╝")
+
+    -- Workspace racine
+    print("\n--- WORKSPACE (racine) ---")
+    for _, child in ipairs(Workspace:GetChildren()) do
+        print("  [" .. child.ClassName .. "] " .. child.Name)
+    end
+
+    -- ReplicatedStorage racine
+    print("\n--- REPLICATED STORAGE (racine) ---")
+    for _, child in ipairs(ReplicatedStorage:GetChildren()) do
+        print("  [" .. child.ClassName .. "] " .. child.Name)
+    end
+
+    -- StarterGui racine
+    print("\n--- STARTER GUI (racine) ---")
+    for _, child in ipairs(StarterGui:GetChildren()) do
+        print("  [" .. child.ClassName .. "] " .. child.Name)
+    end
+end
+
+-- ============ SCAN DES ITEMS / TOOLS ============
+
+local function scanItems()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         ITEMS / TOOLS                 ║")
+    print("╚══════════════════════════════════════╝")
+
+    -- Dans le backpack
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        print("\n--- BACKPACK ---")
+        for _, obj in ipairs(backpack:GetChildren()) do
+            if obj:IsA("Tool") then
+                print("  Tool: " .. obj.Name)
+                for _, child in ipairs(obj:GetChildren()) do
+                    print("    └─ [" .. child.ClassName .. "] " .. child.Name)
+                end
+            end
+        end
+    end
+
+    -- Dans StarterPack
+    print("\n--- STARTER PACK ---")
+    for _, obj in ipairs(StarterPack:GetChildren()) do
+        if obj:IsA("Tool") then
+            print("  Tool: " .. obj.Name)
+        end
+    end
+
+    -- Dans le workspace (items au sol)
+    print("\n--- ITEMS AU SOL (Workspace) ---")
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Tool") then
+            print("  Tool: " .. obj:GetFullName())
+        elseif obj:IsA("Model") then
+            local lowerName = string.lower(obj.Name)
+            if string.find(lowerName, "ore") or string.find(lowerName, "gem") or
+               string.find(lowerName, "drop") or string.find(lowerName, "item") or
+               string.find(lowerName, "collect") or string.find(lowerName, "loot") then
+                print("  Item possible: " .. obj:GetFullName())
+            end
+        end
+    end
+end
+
+-- ============ SCAN DES LUMIÈRES ============
+
+local function scanLights()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         LUMIÈRES                      ║")
+    print("╚══════════════════════════════════════╝")
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
-        if isCollectible(obj) then
-            local pos = getPosition(obj)
-            if pos then
-                local distance = (pos - HumanoidRootPart.Position).Magnitude
-                if distance <= CONFIG.Range then
-                    table.insert(items, {
-                        object = obj,
-                        position = pos,
-                        distance = distance
-                    })
-                end
-            end
-        end
-    end
-
-    -- Trier par distance
-    table.sort(items, function(a, b) return a.distance < b.distance end)
-    return items
-end
-
--- ============ MÉTHODES DE PICKUP ============
-
--- Méthode 1 : ProximityPrompt
-local function pickupProximity(obj)
-    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-    if prompt and fireproximityprompt then
-        fireproximityprompt(prompt)
-        return true
-    end
-    return false
-end
-
--- Méthode 2 : Touch (FireTouchInterest)
-local function pickupTouch(obj)
-    local part = obj:IsA("BasePart") and obj or obj:FindFirstChildWhichIsA("BasePart", true)
-    if part and firetouchinterest then
-        firetouchinterest(HumanoidRootPart, part, 0)
-        task.wait(0.05)
-        firetouchinterest(HumanoidRootPart, part, 1)
-        return true
-    elseif part then
-        -- Fallback sans firetouchinterest
-        part.CanTouch = true
-        local connection = part.Touched:Connect(function() end)
-        connection:Disconnect()
-        return true
-    end
-    return false
-end
-
--- Méthode 3 : ClickDetector
-local function pickupClick(obj)
-    local detector = obj:FindFirstChildWhichIsA("ClickDetector", true)
-    if detector and fireclickdetector then
-        fireclickdetector(detector)
-        return true
-    end
-    return false
-end
-
--- Méthode 4 : Chercher RemoteEvents dans ReplicatedStorage liés au pickup
-local function tryRemotePickup()
-    -- Cherche des remotes courants pour les jeux de minage
-    local remoteNames = {"CollectItem", "PickupItem", "CollectDrop", "PickUp", "GrabItem", "Collect"}
-
-    for _, name in ipairs(remoteNames) do
-        local remote = ReplicatedStorage:FindFirstChild(name, true)
-        if remote and remote:IsA("RemoteEvent") then
-            -- Essaye de fire avec différents arguments
-            pcall(function() remote:FireServer() end)
-            pcall(function() remote:FireServer("all") end)
-        end
-    end
-
-    -- Scan des remotes dans le jeu
-    for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
-        if remote:IsA("RemoteEvent") then
-            local lowerName = string.lower(remote.Name)
-            if string.find(lowerName, "collect") or string.find(lowerName, "pick") or string.find(lowerName, "grab") then
-                pcall(function() remote:FireServer() end)
-            end
+        if obj:IsA("PointLight") then
+            print("  [PointLight] " .. obj:GetFullName() .. " | Range: " .. tostring(obj.Range) .. " | Brightness: " .. tostring(obj.Brightness))
+        elseif obj:IsA("SpotLight") then
+            print("  [SpotLight] " .. obj:GetFullName() .. " | Range: " .. tostring(obj.Range))
+        elseif obj:IsA("SurfaceLight") then
+            print("  [SurfaceLight] " .. obj:GetFullName() .. " | Range: " .. tostring(obj.Range))
         end
     end
 end
 
--- Méthode 5 : Téléport vers l'item
-local function teleportTo(objPos)
-    if CONFIG.TeleportMode then
-        local originalCFrame = HumanoidRootPart.CFrame
-        HumanoidRootPart.CFrame = CFrame.new(objPos + Vector3.new(0, 3, 0))
-        task.wait(0.15)
-        HumanoidRootPart.CFrame = originalCFrame
+-- ============ SCAN DES SONS ============
+
+local function scanSounds()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         SONS                          ║")
+    print("╚══════════════════════════════════════╝")
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Sound") then
+            print("  [Sound] " .. obj:GetFullName() .. " | SoundId: " .. tostring(obj.SoundId))
+        end
     end
 end
 
--- ============ SYSTÈME DE SCAN DES REMOTES ============
--- Trouve automatiquement les RemoteEvents utilisés pour collecter
+-- ============ SCAN DES VALEURS ============
 
-local function discoverRemotes()
-    local found = {}
+local function scanValues()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         VALEURS / DONNÉES             ║")
+    print("╚══════════════════════════════════════╝")
+
+    -- Valeurs du joueur
+    print("\n--- VALEURS DU JOUEUR ---")
+    for _, obj in ipairs(LocalPlayer:GetDescendants()) do
+        if obj:IsA("IntValue") or obj:IsA("StringValue") or obj:IsA("BoolValue") or obj:IsA("NumberValue") then
+            local val = "?"
+            pcall(function() val = tostring(obj.Value) end)
+            print("  " .. obj.Name .. " = " .. val .. " | Chemin: " .. obj:GetFullName())
+        end
+    end
+
+    -- Leaderstats
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+    if leaderstats then
+        print("\n--- LEADERSTATS ---")
+        for _, stat in ipairs(leaderstats:GetChildren()) do
+            local val = "?"
+            pcall(function() val = tostring(stat.Value) end)
+            print("  " .. stat.Name .. " = " .. val)
+        end
+    end
+
+    -- Valeurs dans ReplicatedStorage
+    print("\n--- VALEURS REPLICATED STORAGE ---")
     for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            local lowerName = string.lower(obj.Name)
-            if string.find(lowerName, "collect") or
-               string.find(lowerName, "pickup") or
-               string.find(lowerName, "grab") or
-               string.find(lowerName, "take") or
-               string.find(lowerName, "claim") then
-                table.insert(found, obj)
-            end
+        if obj:IsA("IntValue") or obj:IsA("StringValue") or obj:IsA("BoolValue") or obj:IsA("NumberValue") then
+            local val = "?"
+            pcall(function() val = tostring(obj.Value) end)
+            print("  " .. obj:GetFullName() .. " = " .. val)
         end
     end
-    return found
 end
 
--- Affiche les remotes trouvés dans la console pour debug
-task.spawn(function()
-    local remotes = discoverRemotes()
-    print("=== Drill to Earth - Remotes trouvés ===")
-    for _, r in ipairs(remotes) do
-        print("Remote: " .. r:GetFullName() .. " (" .. r.ClassName .. ")")
-    end
-end)
+-- ============ SCAN DES PROXIMITY PROMPTS & CLICK DETECTORS ============
 
--- ============ BOUCLE PRINCIPALE ============
+local function scanInteractables()
+    print("\n╔══════════════════════════════════════╗")
+    print("║    POINTS D'INTERACTION               ║")
+    print("╚══════════════════════════════════════╝")
 
-task.spawn(function()
-    while CONFIG.Enabled do
-        local success, err = pcall(function()
-            local items = findItems()
-
-            for _, itemData in ipairs(items) do
-                if not CONFIG.Enabled then break end
-
-                local obj = itemData.object
-
-                -- Skip si l'objet a disparu
-                if not obj.Parent then continue end
-
-                -- Téléporter si activé
-                teleportTo(itemData.position)
-
-                -- Essaie chaque méthode
-                local collected = false
-
-                if pickupProximity(obj) then
-                    collected = true
-                end
-
-                if not collected and pickupTouch(obj) then
-                    collected = true
-                end
-
-                if not collected and pickupClick(obj) then
-                    collected = true
-                end
-
-                task.wait(CONFIG.Delay)
-            end
-
-            -- Essaie aussi les RemoteEvents directement
-            tryRemotePickup()
-        end)
-
-        if not success then
-            warn("Erreur dans la boucle: " .. tostring(err))
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            print("  [ProximityPrompt] " .. obj:GetFullName())
+            print("    ActionText: " .. tostring(obj.ActionText))
+            print("    ObjectText: " .. tostring(obj.ObjectText))
+            print("    HoldDuration: " .. tostring(obj.HoldDuration))
+        elseif obj:IsA("ClickDetector") then
+            print("  [ClickDetector] " .. obj:GetFullName())
+            print("    MaxActivationDistance: " .. tostring(obj.MaxActivationDistance))
         end
-
-        task.wait(0.5)
     end
-end)
+end
 
--- ============ RÉINITIALISATION SUR RESPAWN ============
+-- ============ SCAN DES MODÈLES AVEC DÉTAILS ============
 
-LocalPlayer.CharacterAdded:Connect(function(newChar)
-    Character = newChar
-    HumanoidRootPart = newChar:WaitForChild("HumanoidRootPart")
-end)
+local function scanModelsWithDetails()
+    print("\n╔══════════════════════════════════════╗")
+    print("║    MODÈLES (avec contenu détaillé)    ║")
+    print("╚══════════════════════════════════════╝")
 
--- ============ NOTIFICATION ============
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:IsA("Model") then
+            print("\n  ▼ Model: " .. obj.Name)
+            for _, child in ipairs(obj:GetChildren()) do
+                print("    └─ [" .. child.ClassName .. "] " .. child.Name)
+                if child:IsA("Model") then
+                    for _, subchild in ipairs(child:GetChildren()) do
+                        print("        └─ [" .. subchild.ClassName .. "] " .. subchild.Name)
+                    end
+                end
+            end
+        elseif obj:IsA("Folder") then
+            print("\n  ▼ Folder: " .. obj.Name)
+            for _, child in ipairs(obj:GetChildren()) do
+                print("    └─ [" .. child.ClassName .. "] " .. child.Name)
+            end
+        end
+    end
+end
 
-game:GetService("StarterGui"):SetCore("SendNotification", {
-    Title = "Drill to Earth — Auto Collect",
-    Text = "Script chargé. Range: " .. CONFIG.Range .. " studs",
-    Duration = 5
-})
+-- ============ SCAN DES HUMANOID PROPERTIES ============
 
-print("[Auto Collect] Chargé — Drill to Earth")
-print("[Auto Collect] Range: " .. CONFIG.Range)
-print("[Auto Collect] Teleport: " .. tostring(CONFIG.TeleportMode))
+local function scanHumanoid()
+    print("\n╔══════════════════════════════════════╗")
+    print("║    HUMANOID / JOUEUR                  ║")
+    print("╚══════════════════════════════════════╝")
+
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        print("  WalkSpeed: " .. tostring(humanoid.WalkSpeed))
+        print("  JumpPower: " .. tostring(humanoid.JumpPower))
+        print("  Health: " .. tostring(humanoid.Health))
+        print("  MaxHealth: " .. tostring(humanoid.MaxHealth))
+        print("  HipHeight: " .. tostring(humanoid.HipHeight))
+    end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        print("  Position: " .. tostring(hrp.Position))
+        print("  CFrame: " .. tostring(hrp.CFrame))
+    end
+end
+
+-- ============ SCAN DES LIEUX / ZONES ============
+
+local function scanZones()
+    print("\n╔══════════════════════════════════════╗")
+    print("║         ZONES / LIEUX                 ║")
+    print("╚══════════════════════════════════════╝")
+
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if obj:IsA("Model") or obj:IsA("Folder") or obj:IsA("Part") then
+            local lowerName = string.lower(obj.Name)
+            if string.find(lowerName, "zone") or string.find(lowerName, "area") or
+               string.find(lowerName, "level") or string.find(lowerName, "stage") or
+               string.find(lowerName, "floor") or string.find(lowerName, "layer") or
+               string.find(lowerName, "depth") or string.find(lowerName, "biome") or
+               string.find(lowerName, "region") or string.find(lowerName, "section") or
+               string.find(lowerName, "cave") or string.find(lowerName, "mine") then
+                print("  Zone possible: [" .. obj.ClassName .. "] " .. obj.Name)
+            end
+        end
+    end
+end
+
+-- ============ EXÉCUTION PRINCIPALE ============
+
+print("╔══════════════════════════════════════════════════╗")
+print("║     GAME INSPECTOR — ANALYSE COMPLÈTE             ║")
+print("║     Jeu: " .. tostring(game.Name))
+print("║     PlaceId: " .. tostring(game.PlaceId))
+print("║     Joueur: " .. LocalPlayer.Name)
+print("╚══════════════════════════════════════════════════╝")
+
+-- Exécution de tous les scans
+scanGameSettings()
+scanHumanoid()
+scanMainFolders()
+scanModelsWithDetails()
+scanRemotes()
+scanScripts()
+scanItems()
+scanLights()
+scanSounds()
+scanValues()
+scanInteractables()
+scanZones()
+scanCharacter()
+
+-- Scan complet du workspace pour classification
+print("\n╔══════════════════════════════════════╗")
+print("║    CLASSIFICATION COMPLÈTE            ║")
+print("╚══════════════════════════════════════╝")
+
+scanWorkspace()
+
+print("\n╔══════════════════════════════════════╗")
+print("║    RÉSUMÉ PAR CATÉGORIE               ║")
+print("╚══════════════════════════════════════╝")
+
+print("  Modèles: " .. #RESULTS.MODELS)
+print("  Parts: " .. #RESULTS.PARTS)
+print("  Tools/Items: " .. #RESULTS.TOOLS)
+print("  RemoteEvents: " .. #RESULTS.REMOTE_EVENTS)
+print("  RemoteFunctions: " .. #RESULTS.REMOTE_FUNCTIONS)
+print("  Scripts (Server): " .. #RESULTS.SCRIPTS)
+print("  LocalScripts: " .. #RESULTS.LOCAL_SCRIPTS)
+print("  ModuleScripts: " .. #RESULTS.MODULE_SCRIPTS)
+print("  Sons: " .. #RESULTS.SOUNDS)
+print("  Lumières: " .. #RESULTS.LIGHTS)
+print("  GUI: " .. #RESULTS.GUI)
+print("  Dossiers: " .. #RESULTS.FOLDERS)
+print("  ProximityPrompts: " .. #RESULTS.PROXIMITY_PROMPTS)
+print("  ClickDetectors: " .. #RESULTS.CLICK_DETECTORS)
+print("  Valeurs: " .. #RESULTS.VALUES)
+print("  Autres: " .. #RESULTS.OTHER)
+
+print("\n╔══════════════════════════════════════════════════╗")
+print("║    SCAN TERMINÉ — Copie tout le log              ║")
+print("║    et envoie-le pour créer le script ciblé       ║")
+print("╚══════════════════════════════════════════════════╝")
