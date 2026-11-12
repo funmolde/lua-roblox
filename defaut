@@ -1,134 +1,124 @@
+--[[
+    ROBLOX GAME ANALYZER — DELTA ANDROID (FINAL)
+    gethui() confirmé · CoreGui OK · Notifications OK
+]]
+
 --============================================================
 -- SERVICES
 --============================================================
-local Players          = game:GetService("Players")
-local Workspace        = game:GetService("Workspace")
-local ReplicatedStorage= game:GetService("ReplicatedStorage")
-local ReplicatedFirst  = game:GetService("ReplicatedFirst")
-local StarterGui       = game:GetService("StarterGui")
-local StarterPlayer    = game:GetService("StarterPlayer")
-local Lighting         = game:GetService("Lighting")
-local SoundService     = game:GetService("SoundService")
-local Teams            = game:GetService("Teams")
-local CollectionService= game:GetService("CollectionService")
-local RunService       = game:GetService("RunService")
-local TweenService     = game:GetService("TweenService")
-local HttpService      = game:GetService("HttpService")
+local Players           = game:GetService("Players")
+local Workspace         = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ReplicatedFirst   = game:GetService("ReplicatedFirst")
+local StarterGui        = game:GetService("StarterGui")
+local StarterPlayer     = game:GetService("StarterPlayer")
+local Lighting          = game:GetService("Lighting")
+local SoundService      = game:GetService("SoundService")
+local Teams             = game:GetService("Teams")
+local CollectionService = game:GetService("CollectionService")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
 --============================================================
--- ÉTAT GLOBAL
+-- NOTIFICATION HELPER
+--============================================================
+local function notify(title, text, dur)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title, Text = text, Duration = dur or 4,
+        })
+    end)
+end
+
+--============================================================
+-- ÉTAT
 --============================================================
 local State = {
-    running    = false,
-    abort      = false,
-    scanned    = 0,
-    total      = 0,
-    batch      = 25,      -- objets par lot (performance Android)
-    results    = {
-        architecture = {},
-        objects      = {},
-        items        = {},
-        vehicles     = {},
-        remotes      = {},
-        modules      = {},
-        interactions = {},
-        gui          = {},
-        config       = {},
-        relations    = {},
+    running = false,
+    abort   = false,
+    scanned = 0,
+    batch   = 25,
+    results = {
+        architecture={}, objects={}, items={}, vehicles={},
+        remotes={}, modules={}, interactions={}, gui={},
+        config={}, relations={},
     },
-    counts     = {
-        architecture = 0, objects = 0, items = 0, vehicles = 0,
-        remotes = 0, modules = 0, interactions = 0, gui = 0,
-        config = 0, relations = 0,
+    counts = {
+        architecture=0, objects=0, items=0, vehicles=0,
+        remotes=0, modules=0, interactions=0, gui=0,
+        config=0, relations=0,
     },
-    filters    = { objects=true, items=true, vehicles=true, remotes=true,
-                   modules=true, interactions=true, gui=true, config=true },
-    search     = "",
-    seen       = {},      -- anti-doublons
+    filters = {objects=true, items=true, vehicles=true, remotes=true,
+               modules=true, interactions=true, gui=true, config=true},
+    search  = "",
 }
 
 --============================================================
--- UTILITAIRES
+-- UTILS
 --============================================================
-local function alive(obj) -- objet encore existant ?
+local function alive(obj)
     if not obj then return false end
-    if not pcall(function() return obj.Parent end) then return false end
-    return obj.Parent ~= nil or obj == workspace or obj == game
+    local ok, p = pcall(function() return obj.Parent end)
+    return ok and p ~= nil
 end
 
-local function getPath(obj) -- chemin complet sous game
+local function getPath(obj)
     local parts, cur = {}, obj
     while cur and cur ~= game do
-        local ok, name = pcall(function() return cur.Name end)
+        local ok, n = pcall(function() return cur.Name end)
         if not ok then break end
-        local cls = pcall(function() return cur.ClassName end) and cur.ClassName or "?"
-        table.insert(parts, 1, name .. " [" .. cls .. "]")
+        local cls = "?"
+        pcall(function() cls = cur.ClassName end)
+        table.insert(parts, 1, n .. " [" .. cls .. "]")
         cur = pcall(function() return cur.Parent end) and cur.Parent or nil
     end
     return "game." .. table.concat(parts, ".")
 end
 
-local function shortPath(obj, maxDepth) -- chemin court
+local function shortPath(obj, maxDepth)
     local parts, cur, i = {}, obj, 0
     while cur and cur ~= game and i < (maxDepth or 6) do
         local ok = pcall(function() return cur.Name end)
         if not ok then break end
         table.insert(parts, 1, cur.Name)
         cur = pcall(function() return cur.Parent end) and cur.Parent or nil
-        i = i + 1
+        i += 1
     end
     return table.concat(parts, "/")
 end
 
-local function propsOf(inst) -- propriétés lisibles
+local function propsOf(inst)
     local out = {}
     local checks = {
-        {"Position",   function(v) return v and ("(" .. tostring(math.floor(v.X*100)/100) .. ", " .. tostring(math.floor(v.Y*100)/100) .. ", " .. tostring(math.floor(v.Z*100)/100) .. ")") or nil end},
-        {"Orientation",function(v) return v and ("(" .. tostring(v.X) .. ", " .. tostring(v.Y) .. ", " .. tostring(v.Z) .. ")") or nil end},
-        {"Size",       function(v) return v and ("(" .. tostring(v.X) .. ", " .. tostring(v.Y) .. ", " .. tostring(v.Z) .. ")") or nil end},
-        {"ClassName",  tostring},
-        {"Transparency", tostring},
-        {"Anchored",   tostring},
-        {"CanCollide", tostring},
-        {"Material",   tostring},
-        {"Color",      tostring},
-        {"BrickColor", tostring},
-        {"Value",      tostring},
-        {"Text",       tostring},
-        {"Visible",    tostring},
-        {"Health",     tostring},
-        {"MaxHealth",  tostring},
-        {"TeamColor",  tostring},
-        {"RequiresLineOfSight", tostring},
-        {"HoldDuration", tostring},
-        {"ActionText", tostring},
-        {"ObjectName", tostring},
-        {"Cooldown",   tostring},
-        {"Enabled",    tostring},
+        {"Position",   true}, {"Size", true}, {"Anchored", false},
+        {"CanCollide", false}, {"Transparency", false}, {"Material", false},
+        {"Value", false}, {"Text", false}, {"Health", false},
+        {"MaxHealth", false}, {"HoldDuration", false},
+        {"ActionText", false}, {"ObjectName", false}, {"Cooldown", false},
+        {"MaxSpeed", false}, {"Torque", false}, {"Enabled", false},
     }
     for _, pair in ipairs(checks) do
         local ok, v = pcall(function() return inst[pair[1]] end)
         if ok and v ~= nil then
-            local ok2, formatted = pcall(pair[2], v)
-            if ok2 and formatted ~= nil then
-                table.insert(out, pair[1] .. "=" .. tostring(formatted))
+            if pair[1] == "Position" or pair[1] == "Size" then
+                v = string.format("(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
             end
+            table.insert(out, pair[1] .. "=" .. tostring(v))
         end
     end
     return table.concat(out, " | ")
 end
 
-local function attrsOf(inst) -- attributs custom
-    local out = {}
+local function attrsOf(inst)
     local ok, attrs = pcall(function() return inst:GetAttributes() end)
     if ok and attrs then
-        for k, v in pairs(attrs) do
-            table.insert(out, k .. "=" .. tostring(v))
-        end
+        local out = {}
+        for k, v in pairs(attrs) do table.insert(out, k .. "=" .. tostring(v)) end
+        if #out > 0 then return table.concat(out, ", ") end
     end
-    return table.concat(out, ", ")
+    return ""
 end
 
 local function tagsOf(inst)
@@ -142,606 +132,484 @@ local function childrenCount(inst)
     return ok and n or 0
 end
 
-local function matches(inst) -- filtre recherche
+local function matches(inst)
     if State.search == "" then return true end
-    local ok, name = pcall(function() return string.lower(inst.Name) end)
-    if ok and string.find(name, string.lower(State.search)) then return true end
-    local ok2, cls = pcall(function() return string.lower(inst.ClassName) end)
-    return ok2 and string.find(cls, string.lower(State.search)) ~= nil
+    local s = string.lower(State.search)
+    local ok1, n = pcall(function() return string.lower(inst.Name) end)
+    local ok2, c = pcall(function() return string.lower(inst.ClassName) end)
+    return (ok1 and string.find(n, s)) or (ok2 and string.find(c, s))
 end
 
-local function addResult(category, line)
-    if not State.filters[category] and category ~= "architecture" and category ~= "relations" then return end
-    table.insert(State.results[category], line)
-    State.counts[category] = State.counts[category] + 1
+local function addResult(cat, line)
+    table.insert(State.results[cat], line)
+    State.counts[cat] += 1
 end
 
-local function batchWait() -- yield pour éviter le gel
+local function batchWait()
     task.wait()
-    if State.scanned % State.batch == 0 then
-        task.wait(0.05)
-    end
+    if State.scanned % State.batch == 0 then task.wait(0.05) end
     return not State.abort
 end
 
 --============================================================
--- SCAN : ARCHITECTURE GÉNÉRALE
---============================================================
-local function scanArchitecture()
-    addResult("architecture", "═══ ARCHITECTURE GÉNÉRALE ═══")
-    addResult("architecture", "Jeu    : " .. tostring(game.Name))
-    addResult("architecture", "PlaceId: " .. tostring(game.PlaceId))
-    addResult("architecture", "JobId  : " .. tostring(game.JobId))
-    addResult("architecture", "Heure  : " .. os.date("%d/%m/%Y %H:%M:%S"))
-
-    local services = {
-        Workspace, ReplicatedStorage, ReplicatedFirst, Players,
-        StarterGui, StarterPlayer, Lighting, SoundService, Teams, CollectionService,
-    }
-    for _, svc in ipairs(services) do
-        if not batchWait() then return end
-        if alive(svc) then
-            addResult("architecture", string.format(
-                "%s → %d enfants", svc.ClassName, childrenCount(svc)))
-            -- sous-dossiers
-            local ok, kids = pcall(function() return svc:GetChildren() end)
-            if ok then
-                for _, child in ipairs(kids) do
-                    if not batchWait() then return end
-                    if alive(child) then
-                        addResult("architecture", string.format(
-                            "  └ %s [%s] → %d enfants", child.Name, child.ClassName, childrenCount(child)))
-                    end
-                end
-            end
-            State.scanned = State.scanned + 1
-        end
-    end
-end
-
---============================================================
--- SCAN : OBJETS ET MODÈLES
+-- SCANNERS
 --============================================================
 local OBJECT_CLASSES = {
     Model=true, Part=true, MeshPart=true, UnionOperation=true,
-    CornerWedgePart=true, WedgePart=true, TrussPart=true,
-    VehicleSeat=true, Seat=true, SpawnLocation=true,
-    Folder=true, Configuration=true,
+    WedgePart=true, CornerWedgePart=true, VehicleSeat=true, Seat=true,
+    SpawnLocation=true, Folder=true, Configuration=true,
 }
 
-local function classify(inst) -- catégorie par heuristique
+local function classify(inst)
     local n = string.lower(inst.Name)
     local cls = inst.ClassName
-    if OBJECT_CLASSES[cls] then
-        if string.find(n, "car") or string.find(n, "vehicle") or string.find(n, "truck")
-            or string.find(n, "truck") or string.find(n, "voiture") or string.find(n, "veh")
-            or string.find(n, "bike") or string.find(n, "tractor") or string.find(n, "plane") then
-            return "vehicles"
-        elseif inst:IsA("Tool") or string.find(n, "item") or string.find(n, "objet")
-            or string.find(n, "pickup") or string.find(n, "collect") or string.find(n, "wood")
-            or string.find(n, "stone") or string.find(n, "iron") or string.find(n, "gold") then
-            return "items"
-        elseif string.find(n, "zone") or string.find(n, "chunk") or string.find(n, "region")
-            or string.find(n, "plot") or string.find(n, "base") or string.find(n, "land") then
-            return "config"
-        end
-        return "objects"
+    if cls == "Tool" then return "items" end
+    if not OBJECT_CLASSES[cls] then return nil end
+    if string.find(n, "car") or string.find(n, "vehicle") or string.find(n, "truck")
+        or string.find(n, "bike") or string.find(n, "tractor") or string.find(n, "plane")
+        or string.find(n, "veh") or string.find(n, "voiture") then
+        return "vehicles"
+    elseif string.find(n, "item") or string.find(n, "pickup") or string.find(n, "collect")
+        or string.find(n, "wood") or string.find(n, "stone") or string.find(n, "iron")
+        or string.find(n, "gold") or string.find(n, "coin") or string.find(n, "cash") then
+        return "items"
+    elseif string.find(n, "zone") or string.find(n, "chunk") or string.find(n, "region")
+        or string.find(n, "plot") or string.find(n, "base") or string.find(n, "land") then
+        return "config"
     end
-    return nil
+    return "objects"
 end
 
-local function scanObjects(root, label)
-    local queue = {root}
-    local visited = 0
-    local maxDepth = 30
+local function scanArchitecture()
+    addResult("architecture", "═══ ARCHITECTURE ═══")
+    addResult("architecture", "PlaceId: " .. game.PlaceId)
+    addResult("architecture", "Heure  : " .. os.date("%d/%m/%Y %H:%M"))
+    local services = {Workspace, ReplicatedStorage, ReplicatedFirst, Players,
+                      StarterGui, StarterPlayer, Lighting, SoundService, Teams, CollectionService}
+    for _, svc in ipairs(services) do
+        if not batchWait() then return end
+        if alive(svc) then
+            addResult("architecture", string.format("%s → %d enfants", svc.ClassName, childrenCount(svc)))
+            local ok, kids = pcall(svc.GetChildren, svc)
+            if ok then
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then
+                        addResult("architecture", string.format("  └ %s [%s] → %d",
+                            ch.Name, ch.ClassName, childrenCount(ch)))
+                    end
+                end
+            end
+            State.scanned += 1
+        end
+    end
+end
 
+local function scanObjects(root)
+    local queue = {root}
     while #queue > 0 do
         if not batchWait() then return end
         local inst = table.remove(queue)
-        visited = visited + 1
-        State.scanned = State.scanned + 1
-
+        State.scanned += 1
         if alive(inst) and matches(inst) then
             local cat = classify(inst)
             if cat then
                 local line = string.format(
-                    "%s\n  Classe   : %s\n  Chemin   : %s\n  Parent   : %s\n  Enfants  : %d",
+                    "%s\n  Classe  : %s\n  Chemin  : %s\n  Parent  : %s\n  Enfants : %d",
                     inst.Name, inst.ClassName, shortPath(inst, 8),
-                    alive(inst.Parent) and inst.Parent.Name or "orphan",
-                    childrenCount(inst))
+                    alive(inst.Parent) and inst.Parent.Name or "orphan", childrenCount(inst))
                 local props = propsOf(inst)
-                if props ~= "" then line = line .. "\n  Props    : " .. props end
+                if props ~= "" then line ..= "\n  Props   : " .. props end
                 local attrs = attrsOf(inst)
-                if attrs ~= "" then line = line .. "\n  Attributs: " .. attrs end
+                if attrs ~= "" then line ..= "\n  Attrs   : " .. attrs end
                 local tags = tagsOf(inst)
-                if tags ~= "" then line = line .. "\n  Tags     : " .. tags end
+                if tags ~= "" then line ..= "\n  Tags    : " .. tags end
                 addResult(cat, line .. "\n  " .. string.rep("─", 40))
             end
-
-            local ok, kids = pcall(function() return inst:GetChildren() end)
+            local ok, kids = pcall(inst.GetChildren, inst)
             if ok then
-                for _, child in ipairs(kids) do
-                    if alive(child) then table.insert(queue, child) end
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then table.insert(queue, ch) end
                 end
             end
         end
     end
 end
 
---============================================================
--- SCAN : REMOTES / COMMUNICATIONS RÉSEAU
---============================================================
-local REMOTE_CLASSES = {
-    RemoteEvent=true, RemoteFunction=true,
-    BindableEvent=true, BindableFunction=true,
-}
+local REMOTE_CLASSES = {RemoteEvent=true, RemoteFunction=true,
+                        BindableEvent=true, BindableFunction=true}
 
 local function scanRemotes()
     local queue = {ReplicatedStorage, ReplicatedFirst, Workspace, StarterGui, StarterPlayer}
-
     while #queue > 0 do
         if not batchWait() then return end
         local inst = table.remove(queue)
-        State.scanned = State.scanned + 1
-
+        State.scanned += 1
         if alive(inst) then
             if REMOTE_CLASSES[inst.ClassName] and matches(inst) then
-                local line = string.format(
-                    "%s\n  Type     : %s\n  Chemin   : %s\n  Parent   : %s",
+                local hints = {
+                    RemoteEvent     = "FireServer(player,...) / FireClient(p,...) / FireAllClients(...)",
+                    RemoteFunction  = "InvokeServer(...) / InvokeClient(p,...)",
+                    BindableEvent   = "Fire(...)",
+                    BindableFunction= "Invoke(...)",
+                }
+                addResult("remotes", string.format(
+                    "%s\n  Type    : %s\n  Chemin  : %s\n  Méthodes: %s\n  %s",
                     inst.Name, inst.ClassName, getPath(inst),
-                    alive(inst.Parent) and inst.Parent.Name or "orphan")
-                -- signature des méthodes connues par introspection des autres scripts
-                local hints = {}
-                if inst.ClassName == "RemoteEvent" then
-                    hints = {"FireServer(player, ...)", "FireClient(player, ...)", "FireAllClients(...)"}
-                elseif inst.ClassName == "RemoteFunction" then
-                    hints = {"InvokeServer(...)", "InvokeClient(player, ...)"}
-                elseif inst.ClassName == "BindableEvent" then
-                    hints = {"Fire(...)"}
-                elseif inst.ClassName == "BindableFunction" then
-                    hints = {"Invoke(...)"}
-                end
-                line = line .. "\n  Méthodes : " .. table.concat(hints, " / ")
-                addResult("remotes", line .. "\n  " .. string.rep("─", 40))
+                    hints[inst.ClassName], string.rep("─", 40)))
             end
-
-            local ok, kids = pcall(function() return inst:GetChildren() end)
+            local ok, kids = pcall(inst.GetChildren, inst)
             if ok then
-                for _, child in ipairs(kids) do
-                    if alive(child) then table.insert(queue, child) end
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then table.insert(queue, ch) end
                 end
             end
         end
     end
 end
 
---============================================================
--- SCAN : SCRIPTS ET MODULES
---============================================================
-local SCRIPT_CLASSES = {
-    Script=true, LocalScript=true, ModuleScript=true,
-}
+local SCRIPT_CLASSES = {Script=true, LocalScript=true, ModuleScript=true}
 
 local function scanScripts()
     local queue = {ReplicatedStorage, ReplicatedFirst, StarterGui, StarterPlayer, Workspace, LocalPlayer}
-
     while #queue > 0 do
         if not batchWait() then return end
         local inst = table.remove(queue)
-        State.scanned = State.scanned + 1
-
+        State.scanned += 1
         if alive(inst) then
             if SCRIPT_CLASSES[inst.ClassName] and matches(inst) then
                 local src = ""
-                local ok, code = pcall(function() return inst.Source end) -- si exécuteur expose
+                local ok, code = pcall(function() return inst.Source end)
                 if ok and type(code) == "string" then
-                    src = "\n  Source   : OUI (accroche les fonctions ici)"
+                    src = "\n  Source  : ACCESSIBLE"
                 else
-                    src = "\n  Source   : protégé ( bytecode luau )"
+                    src = "\n  Source  : protégé"
                 end
-
-                local line = string.format(
-                    "%s\n  Type     : %s\n  Chemin   : %s%s",
+                local line = string.format("%s\n  Type    : %s\n  Chemin  : %s%s",
                     inst.Name, inst.ClassName, getPath(inst), src)
 
-                -- analyse heuristique du contenu si source lisible
                 if type(code) == "string" then
                     local funcs = {}
                     for fn in string.gmatch(code, "function%s+([%w_:%.]+)") do
                         table.insert(funcs, fn)
-                        if #funcs >= 12 then break end
+                        if #funcs >= 10 then break end
                     end
-                    if #funcs > 0 then
-                        line = line .. "\n  Fonctions: " .. table.concat(funcs, ", ")
+                    if #funcs > 0 then line ..= "\n  Fonctions: " .. table.concat(funcs, ", ") end
+                    local reqs = {}
+                    for req in string.gmatch(code, "require%s*%(%s*([%w_%.:%s]+)%)") do
+                        table.insert(reqs, req)
+                        if #reqs >= 8 then break end
                     end
-                    local requires = {}
-                    for req in string.gmatch(code, "require%s*%(%s*script[%w_%.]*([%w_%.]+)") do
-                        table.insert(requires, req)
-                        if #requires >= 8 then break end
-                    end
-                    if #requires > 0 then
-                        line = line .. "\n  Requiert : " .. table.concat(requires, ", ")
-                    end
+                    if #reqs > 0 then line ..= "\n  Require : " .. table.concat(reqs, ", ") end
                 end
 
-                -- classification Knit
                 local n = string.lower(inst.Name)
                 local role = "module"
                 if string.find(n, "service") then role = "Service (Knit)"
                 elseif string.find(n, "controller") then role = "Controller (Knit)"
-                elseif string.find(n, "config") or string.find(n, "settings") then role = "Configuration"
-                elseif string.find(n, "item") or string.find(n, "data") or string.find(n, "db") then role = "Base de données"
-                elseif string.find(n, "ui") or string.find(n, "interface") then role = "Module UI"
-                end
-                line = line .. "\n  Rôle     : " .. role
-
+                elseif string.find(n, "config") or string.find(n, "settings") then role = "Config"
+                elseif string.find(n, "item") or string.find(n, "data") or string.find(n, "db") then role = "DB items"
+                elseif string.find(n, "ui") or string.find(n, "interface") then role = "Module UI" end
+                line ..= "\n  Rôle    : " .. role
                 addResult("modules", line .. "\n  " .. string.rep("─", 40))
             end
-
-            local ok, kids = pcall(function() return inst:GetChildren() end)
+            local ok, kids = pcall(inst.GetChildren, inst)
             if ok then
-                for _, child in ipairs(kids) do
-                    if alive(child) then table.insert(queue, child) end
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then table.insert(queue, ch) end
                 end
             end
         end
     end
 end
 
---============================================================
--- SCAN : INTERACTIONS
---============================================================
 local function scanInteractions()
     local queue = {Workspace, StarterGui, StarterPlayer, ReplicatedStorage}
-
     while #queue > 0 do
         if not batchWait() then return end
         local inst = table.remove(queue)
-        State.scanned = State.scanned + 1
-
+        State.scanned += 1
         if alive(inst) then
             local cls = inst.ClassName
-            local hit = false
-            local kind = ""
-
+            local line = nil
             if cls == "ProximityPrompt" then
-                local ok, actionText = pcall(function() return inst.ActionText end)
-                local ok2, holdDur = pcall(function() return inst.HoldDuration end)
-                local ok3, objName = pcall(function() return inst.ObjectName end)
-                kind = string.format(
-                    "ProximityPrompt\n  Action   : %s\n  Objet    : %s\n  HoldDur  : %s\n  Chemin   : %s",
-                    tostring(actionText), tostring(objName), tostring(holdDur), getPath(inst))
-                hit = true
+                local a, o, h = "", "", ""
+                pcall(function() a = inst.ActionText end)
+                pcall(function() o = inst.ObjectName end)
+                pcall(function() h = inst.HoldDuration end)
+                line = string.format("ProximityPrompt\n  Action  : %s | Objet: %s | Hold: %s\n  Chemin  : %s",
+                    a, o, h, getPath(inst))
             elseif cls == "ClickDetector" then
-                kind = string.format("ClickDetector\n  MaxDist  : %s\n  Chemin   : %s",
-                    tostring(pcall(function() return inst.MaxActivationDistance end) and inst.MaxActivationDistance or "?"),
-                    getPath(inst))
-                hit = true
+                line = string.format("ClickDetector\n  Chemin  : %s", getPath(inst))
             elseif cls == "TouchTransmitter" then
-                kind = string.format("TouchTransmitter (Touched)\n  Parent   : %s [%s]\n  Chemin   : %s",
+                line = string.format("TouchTransmitter\n  Parent  : %s [%s]\n  Chemin  : %s",
                     alive(inst.Parent) and inst.Parent.Name or "?",
-                    alive(inst.Parent) and inst.Parent.ClassName or "?",
-                    getPath(inst))
-                hit = true
-            elseif cls == "Tool" then
-                kind = string.format("Tool\n  Grip     : %s\n  Chemin   : %s",
-                    tostring(pcall(function() return tostring(inst.Grip) end) and tostring(inst.Grip) or "?"),
-                    getPath(inst))
-                hit = true
+                    alive(inst.Parent) and inst.Parent.ClassName or "?", getPath(inst))
             elseif cls == "VehicleSeat" then
-                kind = string.format("VehicleSeat\n  MaxSpeed : %s\n  Torque   : %s\n  Chemin   : %s",
-                    tostring(pcall(function() return inst.MaxSpeed end) and inst.MaxSpeed or "?"),
-                    tostring(pcall(function() return inst.Torque end) and inst.Torque or "?"),
-                    getPath(inst))
-                hit = true
+                local sp, tq = "", ""
+                pcall(function() sp = tostring(inst.MaxSpeed) end)
+                pcall(function() tq = tostring(inst.Torque) end)
+                line = string.format("VehicleSeat\n  MaxSpeed: %s | Torque: %s\n  Chemin  : %s",
+                    sp, tq, getPath(inst))
+            elseif cls == "Tool" then
+                line = string.format("Tool\n  Chemin  : %s", getPath(inst))
             end
-
-            if hit and matches(inst) then
-                addResult("interactions", inst.Name .. "\n  " .. kind .. "\n  " .. string.rep("─", 40))
+            if line and matches(inst) then
+                addResult("interactions", inst.Name .. "\n  " .. line .. "\n  " .. string.rep("─", 40))
             end
-
-            local ok, kids = pcall(function() return inst:GetChildren() end)
+            local ok, kids = pcall(inst.GetChildren, inst)
             if ok then
-                for _, child in ipairs(kids) do
-                    if alive(child) then table.insert(queue, child) end
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then table.insert(queue, ch) end
                 end
             end
         end
     end
 end
 
---============================================================
--- SCAN : INTERFACE (GUI)
---============================================================
-local GUI_CLASSES = {
-    ScreenGui=true, Frame=true, TextButton=true, TextLabel=true,
-    ImageButton=true, ImageLabel=true, ScrollingFrame=true,
-    TextBox=true, UIGridLayout=true, UIListLayout=true,
-}
+local GUI_CLASSES = {ScreenGui=true, Frame=true, TextButton=true, TextLabel=true,
+                     ImageButton=true, ImageLabel=true, ScrollingFrame=true, TextBox=true}
 
 local function scanGui()
-    local queue = {StarterGui, LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")}
-
+    local queue = {StarterGui}
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if pg then table.insert(queue, pg) end
     while #queue > 0 do
         if not batchWait() then return end
         local inst = table.remove(queue)
-        State.scanned = State.scanned + 1
-
+        State.scanned += 1
         if alive(inst) then
             if GUI_CLASSES[inst.ClassName] and matches(inst) then
-                local line = string.format(
-                    "%s\n  Classe   : %s\n  Chemin   : %s\n  Visible  : %s\n  Enfants  : %d",
-                    inst.Name, inst.ClassName, getPath(inst),
-                    tostring(pcall(function() return inst.Visible end) and inst.Visible or "n/a"),
-                    childrenCount(inst))
-                local props = propsOf(inst)
-                if props ~= "" and inst.ClassName == "TextLabel" then
-                    line = line .. "\n  Texte    : " .. string.sub(tostring(pcall(function() return inst.Text end) and inst.Text or ""), 1, 80)
-                end
-                addResult("gui", line .. "\n  " .. string.rep("─", 40))
+                local vis = ""
+                pcall(function() vis = tostring(inst.Visible) end)
+                addResult("gui", string.format(
+                    "%s\n  Classe  : %s\n  Chemin  : %s\n  Visible : %s | Enfants: %d\n  %s",
+                    inst.Name, inst.ClassName, getPath(inst), vis, childrenCount(inst),
+                    string.rep("─", 40)))
             end
-
-            local ok, kids = pcall(function() return inst:GetChildren() end)
+            local ok, kids = pcall(inst.GetChildren, inst)
             if ok then
-                for _, child in ipairs(kids) do
-                    if alive(child) then table.insert(queue, child) end
+                for _, ch in ipairs(kids) do
+                    if alive(ch) then table.insert(queue, ch) end
                 end
             end
         end
     end
 end
 
---============================================================
--- SCAN : PARAMÈTRES / CONFIGURATION / SYSTÈMES
---============================================================
 local function scanConfig()
-    addResult("config", "═══ SYSTÈMES DÉTECTÉS ═══")
-
-    -- monnaies (leaderstats)
-    local ok, stats = pcall(function() return LocalPlayer:FindFirstChild("leaderstats") end)
-    if ok and stats then
-        addResult("config", "Système monnaie : leaderstats")
-        for _, child in ipairs(stats:GetChildren()) do
-            addResult("config", string.format("  Statistique : %s = %s [%s]",
-                child.Name, tostring(child.Value), child.ClassName))
+    addResult("config", "═══ SYSTÈMES ═══")
+    local stats = LocalPlayer:FindFirstChild("leaderstats")
+    if stats then
+        addResult("config", "Monnaie : leaderstats")
+        for _, ch in ipairs(stats:GetChildren()) do
+            local v = ""
+            pcall(function() v = tostring(ch.Value) end)
+            addResult("config", string.format("  %s = %s [%s]", ch.Name, v, ch.ClassName))
         end
     end
-
-    -- équipes
-    local ok2, teams = pcall(function() return Teams:GetTeams() end)
-    if ok2 then
-        addResult("config", string.format("Système équipes : %d équipes", #teams))
+    local ok, teams = pcall(Teams.GetTeams, Teams)
+    if ok then
+        addResult("config", "Équipes : " .. #teams)
         for _, t in ipairs(teams) do
-            addResult("config", string.format("  Équipe : %s [%s]", t.Name, tostring(t.TeamColor)))
+            addResult("config", string.format("  %s [%s]", t.Name, tostring(t.TeamColor)))
         end
     end
-
-    -- spawn locations
-    local ok3, spawns = pcall(function() return Workspace:GetDescendants() end)
-    if ok3 then
-        local spawnCount = 0
-        for _, d in ipairs(spawns) do
+    local ok2, desc = pcall(Workspace.GetDescendants, Workspace)
+    if ok2 then
+        local spawns, shops = 0, {}
+        for _, d in ipairs(desc) do
             if d.ClassName == "SpawnLocation" then
-                spawnCount = spawnCount + 1
-                if spawnCount <= 20 then
-                    addResult("config", string.format("  Spawn : %s à (%.0f, %.0f, %.0f)",
+                spawns += 1
+                if spawns <= 15 then
+                    addResult("config", string.format("  Spawn: %s (%.0f,%.0f,%.0f)",
                         d.Name, d.Position.X, d.Position.Y, d.Position.Z))
                 end
             end
-        end
-        addResult("config", string.format("Total SpawnLocations : %d", spawnCount))
-    end
-
-    -- dossiers de zones
-    local ok4, wsKids = pcall(function() return Workspace:GetChildren() end)
-    if ok4 then
-        addResult("config", "Zones / Chunks dans Workspace :")
-        for _, child in ipairs(wsKids) do
-            if child:IsA("Folder") or child:IsA("Model") then
-                local count = childrenCount(child)
-                if count > 10 then
-                    addResult("config", string.format("  Zone candidate : %s [%s] → %d objets",
-                        child.Name, child.ClassName, count))
-                end
-            end
-        end
-    end
-
-    -- postes de vente (Shop / Sell / Buy)
-    local ok5, desc = pcall(function() return Workspace:GetDescendants() end)
-    if ok5 then
-        addResult("config", "Zones de vente / achat détectées :")
-        local shown = 0
-        for _, d in ipairs(desc) do
-            if shown >= 30 then break end
             local n = string.lower(d.Name)
             if d:IsA("BasePart") and (string.find(n, "sell") or string.find(n, "shop")
                 or string.find(n, "buy") or string.find(n, "vendre") or string.find(n, "vente")
                 or string.find(n, "magasin") or string.find(n, "acheter")) then
-                addResult("config", string.format("  %s [%s] à (%.0f, %.0f, %.0f) → %s",
-                    d.Name, d.ClassName, d.Position.X, d.Position.Y, d.Position.Z, getPath(d)))
-                shown = shown + 1
+                table.insert(shops, string.format("  %s [%s] (%.0f,%.0f,%.0f)",
+                    d.Name, d.ClassName, d.Position.X, d.Position.Y, d.Position.Z))
+                if #shops >= 25 then break end
             end
+        end
+        addResult("config", "Spawns total : " .. spawns)
+        if #shops > 0 then
+            addResult("config", "Zones de vente/achat :")
+            for _, s in ipairs(shops) do addResult("config", s) end
         end
     end
 end
 
---============================================================
--- SCAN : CARTOGRAPHIE DES RELATIONS
---============================================================
 local function scanRelations()
-    addResult("relations", "═══ CARTOGRAPHIE DES DÉPENDANCES ═══")
-
-    -- RemoteEvent par système : où est-il utilisé ?
-    addResult("relations", "→ Remotes par chemin (relie au système) :")
+    addResult("relations", "═══ RELATIONS SYSTÈMES ═══")
+    local svc, ctrl, cfg = 0, 0, 0
+    for _, m in ipairs(State.results.modules) do
+        if string.find(m, "Service %(") then svc += 1 end
+        if string.find(m, "Controller %(") then ctrl += 1 end
+        if string.find(m, "Config") then cfg += 1 end
+    end
+    addResult("relations", string.format("Services: %d | Controllers: %d | Configs: %d", svc, ctrl, cfg))
+    addResult("relations", "→ Remotes et leurs chemins :")
     for _, r in ipairs(State.results.remotes) do
-        if string.find(r, "Remote") and not string.find(r, "Bindable") then
-            -- extraire le chemin
-            for path in string.gmatch(r, "game%.[%w%.%[%]%s%w]+") do
-                addResult("relations", "  Remote détecté : " .. path)
-                break
-            end
+        local name = string.match(r, "^([^\n]+)")
+        if name then
+            local path = string.match(r, "game%..- %[[%w]+%]")
+            addResult("relations", string.format("  %s → %s", name, path or "?"))
         end
     end
-
-    addResult("relations", "→ Modules par rôle :")
-    local services, controllers, configs = {}, {}, {}
-    for _, m in ipairs(State.results.modules) do
-        if string.find(m, "Service %(") then table.insert(services, string.match(m, "^([%w%s_]+)\n")) end
-        if string.find(m, "Controller %(") then table.insert(controllers, string.match(m, "^([%w%s_]+)\n")) end
-        if string.find(m, "Configuration") then table.insert(configs, string.match(m, "^([%w%s_]+)\n")) end
-    end
-    addResult("relations", string.format("  Services    : %d", #services))
-    addResult("relations", string.format("  Controllers : %d", #controllers))
-    addResult("relations", string.format("  Configs     : %d", #configs))
-
     addResult("relations", "→ Interactions → Systèmes :")
     for _, i in ipairs(State.results.interactions) do
         local name = string.match(i, "^([^\n]+)")
         if name then
-            local sys = "inconnu"
             local ln = string.lower(name)
-            if string.find(ln, "sell") or string.find(ln, "vente") then sys = "Système de vente"
-            elseif string.find(ln, "buy") or string.find(ln, "achat") then sys = "Système d'achat"
-            elseif string.find(ln, "collect") or string.find(ln, "pickup") then sys = "Système de collecte"
-            elseif string.find(ln, "car") or string.find(ln, "vehicle") then sys = "Système de véhicules"
-            elseif string.find(ln, "door") or string.find(ln, "gate") then sys = "Système de zones"
-            end
+            local sys = "inconnu"
+            if string.find(ln, "sell") or string.find(ln, "vente") then sys = "VENTE"
+            elseif string.find(ln, "buy") or string.find(ln, "achat") then sys = "ACHAT"
+            elseif string.find(ln, "collect") or string.find(ln, "pickup") then sys = "COLLECTE"
+            elseif string.find(ln, "car") or string.find(ln, "vehicle") or string.find(ln, "veh") then sys = "VÉHICULES"
+            elseif string.find(ln, "door") or string.find(ln, "gate") then sys = "ZONES" end
             addResult("relations", string.format("  [%s] → %s", name, sys))
-        end
-    end
-
-    addResult("relations", "→ Interface → Systèmes :")
-    for _, g in ipairs(State.results.gui) do
-        local name = string.match(g, "^([^\n]+)")
-        if name then
-            addResult("relations", "  GUI : " .. name .. " → liée à l'affichage/contrôle d'une mécanique")
         end
     end
 end
 
 --============================================================
--- BOUCLE PRINCIPALE DE SCAN
+-- SCAN LOOP
 --============================================================
 local function runScan()
-    State.abort    = false
-    State.running  = true
-    State.scanned  = 0
-    for k, v in pairs(State.counts) do State.counts[k] = 0 end
-    for k, v in pairs(State.results) do State.results[k] = {} end
-    State.seen = {}
+    State.abort, State.running, State.scanned = false, true, 0
+    for k in pairs(State.counts)  do State.counts[k] = 0 end
+    for k in pairs(State.results) do State.results[k] = {} end
 
-    -- estimation du total pour la barre de progression
-    local ok, all = pcall(function() return game:GetDescendants() end)
-    State.total = ok and #all or 10000
+    local ok, all = pcall(game.GetDescendants, game)
+    local total = ok and #all or 10000
 
     local steps = {
-        {"Architecture", scanArchitecture},
-        {"Objets & Modèles", function() scanObjects(Workspace) end},
-        {"Objets Replicated", function() scanObjects(ReplicatedStorage) end},
-        {"Objets StarterPlayer", function() scanObjects(StarterPlayer) end},
-        {"Remotes", scanRemotes},
-        {"Scripts & Modules", scanScripts},
-        {"Interactions", scanInteractions},
-        {"Interface", scanGui},
-        {"Paramètres", scanConfig},
-        {"Relations", scanRelations},
+        {"Architecture",  scanArchitecture},
+        {"Objets WS",     function() scanObjects(Workspace) end},
+        {"Objets RS",     function() scanObjects(ReplicatedStorage) end},
+        {"Objets SP",     function() scanObjects(StarterPlayer) end},
+        {"Remotes",       scanRemotes},
+        {"Scripts",       scanScripts},
+        {"Interactions",  scanInteractions},
+        {"Interface",     scanGui},
+        {"Paramètres",    scanConfig},
+        {"Relations",     scanRelations},
     }
 
     for i, step in ipairs(steps) do
         if State.abort then break end
-        local ok, err = pcall(step[2])
-        if not ok then
-            warn("Erreur pendant " .. step[1] .. ": " .. tostring(err))
-        end
-        local pct = math.floor((i / #steps) * 100)
-        if GUI.updateProgress then GUI.updateProgress(pct, step[1]) end
+        local pok, err = pcall(step[2])
+        if not pok then warn("Err " .. step[1] .. ": " .. tostring(err)) end
+        GUI.updateProgress(math.floor((i / #steps) * 100), step[1])
         task.wait(0.1)
     end
 
     State.running = false
-    if GUI.scanDone then GUI.scanDone() end
+    if State.abort then
+        GUI.updateProgress(0, "Scan interrompu")
+        notify("Analyzer", "Scan interrompu", 3)
+    else
+        GUI.updateProgress(100, "Terminé")
+        notify("Analyzer", "Scan terminé — " .. State.scanned .. " objets", 4)
+    end
+    refreshResults()
 end
 
 --============================================================
--- INTERFACE GRAPHIQUE (DRAGGABLE WINDOW)
+-- GUI (MONTAGE FIABLE gethui → CoreGui → PlayerGui)
 --============================================================
 local GUI = {}
 
-local function make(className, props, parent)
+local function make(cls, props, parent)
     local ok, inst = pcall(function()
-        local i = Instance.new(className)
+        local i = Instance.new(cls)
         for k, v in pairs(props) do i[k] = v end
-        i.Parent = parent
+        if parent then i.Parent = parent end
         return i
     end)
     return ok and inst or nil
 end
 
-local function tryAddGui(parent)
-    if parent then
-        local ok = pcall(function() gui.Parent = parent end)
-        if ok then return true end
-    end
-    return false
+local function getTarget()
+    local ok, h = pcall(gethui)
+    if ok and h then return h end
+    local ok2, cg = pcall(game.GetService, game, "CoreGui")
+    if ok2 and cg then return cg end
+    return LocalPlayer:FindFirstChild("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 3)
+end
+
+local parent = getTarget()
+if not parent then
+    notify("ERREUR", "Aucun parent GUI trouvé", 10)
+    return
 end
 
 local gui = make("ScreenGui", {
-    Name = "GameAnalyzerGUI",
+    Name = "AnalyzerGUI_" .. tostring(math.random(10000, 99999)),
     ResetOnSpawn = false,
-    IgnoreGuiInset = true,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    IgnoreGuiInset = false,
+    DisplayOrder = 9999,
 })
 
--- essayer CoreGui, fallback PlayerGui
-if not tryAddGui(game:GetService("CoreGui")) then
-    if not tryAddGui(LocalPlayer:FindFirstChild("PlayerGui")) then
-        tryAddGui(game:GetService("StarterGui"))
-    end
+if not gui then
+    notify("ERREUR", "ScreenGui refusé", 8)
+    return
 end
+gui.Parent = parent
 
--- Fenêtre principale
+-- anti-destruction respawn
+task.spawn(function()
+    while gui and gui.Parent do
+        task.wait(1)
+    end
+    while true do
+        task.wait(2)
+        local ok, h = pcall(gethui)
+        local target = (ok and h) or LocalPlayer:FindFirstChild("PlayerGui")
+        if gui and not gui.Parent and target then
+            pcall(function() gui.Parent = target end)
+        end
+        if not gui then break end
+    end
+end)
+
+-- fenêtre principale — POSITION RELATIVE AU CENTRE (fix MEmu)
 local main = make("Frame", {
-    Name = "Main",
-    Size = UDim2.new(0, 480, 0, 600),
-    Position = UDim2.new(0.5, -240, 0.5, -300),
+    Size = UDim2.fromScale(0.42, 0.62),
+    Position = UDim2.fromScale(0.29, 0.19),
     BackgroundColor3 = Color3.fromRGB(18, 18, 24),
     BorderSizePixel = 0,
     Active = true,
-    Parent = gui,
-})
+}, gui)
 make("UICorner", {CornerRadius = UDim.new(0, 10)}, main)
-make("UIStroke", {Color = Color3.fromRGB(90, 90, 120), Thickness = 1.5}, main)
+make("UIStroke", {Color = Color3.fromRGB(90, 90, 130), Thickness = 1.5}, main)
 
--- Barre de titre (draggable)
 local titleBar = make("Frame", {
-    Name = "TitleBar",
-    Size = UDim2.new(1, 0, 0, 36),
-    BackgroundColor3 = Color3.fromRGB(30, 30, 40),
-    Parent = main,
-})
+    Size = UDim2.new(1, 0, 0, 34),
+    BackgroundColor3 = Color3.fromRGB(28, 28, 40),
+}, main)
 make("UICorner", {CornerRadius = UDim.new(0, 10)}, titleBar)
 
-local title = make("TextLabel", {
-    Size = UDim2.new(1, -50, 1, 0),
-    Position = UDim2.new(0, 12, 0, 0),
+make("TextLabel", {
+    Size = UDim2.new(1, -46, 1, 0),
+    Position = UDim2.fromOffset(12, 0),
     BackgroundTransparency = 1,
-    Text = "  ROBLOX GAME ANALYZER — DELTA",
+    Text = "  GAME ANALYZER — DELTA",
     TextColor3 = Color3.fromRGB(220, 220, 240),
-    TextSize = 15,
+    TextSize = 14,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
-    Parent = titleBar,
-})
+}, titleBar)
 
--- Drag au doigt
+-- drag
 local dragging, dragStart, startPos = false, nil, nil
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-        dragging  = true
-        dragStart = input.Position
-        startPos  = main.Position
+        dragging, dragStart, startPos = true, input.Position, main.Position
     end
 end)
 titleBar.InputEnded:Connect(function(input)
@@ -750,154 +618,150 @@ titleBar.InputEnded:Connect(function(input)
         dragging = false
     end
 end)
-game:GetService("UserInputService").InputChanged:Connect(function(input)
+UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
         or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
-                                  startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        local d = input.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                  startPos.Y.Scale, startPos.Y.Offset + d.Y)
     end
 end)
 
--- Bouton fermer (X)
+-- bouton X
 local closeBtn = make("TextButton", {
-    Size = UDim2.new(0, 30, 0, 26),
-    Position = UDim2.new(1, -34, 0, 5),
+    Size = UDim2.fromOffset(28, 24),
+    Position = UDim2.new(1, -32, 0, 5),
     BackgroundColor3 = Color3.fromRGB(200, 50, 50),
     Text = "✕",
     TextColor3 = Color3.new(1, 1, 1),
-    TextSize = 16,
+    TextSize = 15,
     Font = Enum.Font.GothamBold,
-    Parent = titleBar,
-})
+}, titleBar)
 make("UICorner", {CornerRadius = UDim.new(0, 6)}, closeBtn)
+closeBtn.MouseButton1Click:Connect(function()
+    State.abort = true
+    State.running = false
+    task.wait(0.3)
+    pcall(function() gui:Destroy() end)
+    notify("Analyzer", "Fermé", 3)
+end)
 
--- Zone de contenu
+-- toggle touche V
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.V then
+        gui.Enabled = not gui.Enabled
+    end
+end)
+
 local content = make("Frame", {
-    Size = UDim2.new(1, -16, 1, -50),
-    Position = UDim2.new(0, 8, 0, 40),
+    Size = UDim2.new(1, -14, 1, -44),
+    Position = UDim2.fromOffset(7, 38),
     BackgroundTransparency = 1,
-    Parent = main,
-})
+}, main)
 
--- Barre de progression
+-- progress
 local progBg = make("Frame", {
     Size = UDim2.new(1, 0, 0, 18),
     BackgroundColor3 = Color3.fromRGB(40, 40, 55),
-    Parent = content,
-})
+}, content)
 make("UICorner", {CornerRadius = UDim.new(0, 9)}, progBg)
 local progFill = make("Frame", {
     Size = UDim2.new(0, 0, 1, 0),
     BackgroundColor3 = Color3.fromRGB(80, 180, 255),
-    Parent = progBg,
-})
+}, progBg)
 make("UICorner", {CornerRadius = UDim.new(0, 9)}, progFill)
-
 local progLabel = make("TextLabel", {
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundTransparency = 1,
     Text = "Prêt",
-    TextColor3 = Color3.fromRGB(200, 200, 220),
+    TextColor3 = Color3.fromRGB(210, 210, 230),
     TextSize = 11,
     Font = Enum.Font.Gotham,
-    Parent = progBg,
-})
+}, progBg)
 
--- Compteurs
+-- compteurs
 local countersFrame = make("Frame", {
-    Size = UDim2.new(1, 0, 0, 30),
-    Position = UDim2.new(0, 0, 0, 24),
+    Size = UDim2.new(1, 0, 0, 26),
+    Position = UDim2.fromOffset(0, 22),
     BackgroundTransparency = 1,
-    Parent = content,
-})
-local countersList = make("UIListLayout", {
+}, content)
+make("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
-    Padding = UDim.new(0, 6),
-    HorizontalAlignment = Enum.HorizontalAlignment.Left,
+    Padding = UDim.new(0, 4),
 }, countersFrame)
 
 local counterLabels = {}
 local function addCounter(name, color)
     local lbl = make("TextLabel", {
-        Size = UDim2.new(0, 68, 1, 0),
+        Size = UDim2.new(0, 58, 1, 0),
         BackgroundColor3 = Color3.fromRGB(35, 35, 50),
         Text = name .. ": 0",
-        TextColor3 = color or Color3.fromRGB(220, 220, 240),
-        TextSize = 10,
+        TextColor3 = color,
+        TextSize = 9,
         Font = Enum.Font.Gotham,
-        Parent = countersFrame,
-    })
-    make("UICorner", {CornerRadius = UDim.new(0, 5)}, lbl)
+    }, countersFrame)
+    make("UICorner", {CornerRadius = UDim.new(0, 4)}, lbl)
     counterLabels[name] = lbl
-    return lbl
 end
-addCounter("Objets",  Color3.fromRGB(140, 220, 255))
-addCounter("Remotes", Color3.fromRGB(255, 200, 100))
-addCounter("Modules", Color3.fromRGB(180, 255, 180))
-addCounter("Interact",Color3.fromRGB(255, 150, 150))
-addCounter("Items",   Color3.fromRGB(220, 180, 255))
-addCounter("Vehic",   Color3.fromRGB(255, 220, 150))
-addCounter("GUI",     Color3.fromRGB(150, 200, 255))
-addCounter("Config",  Color3.fromRGB(200, 200, 200))
+addCounter("Obj",   Color3.fromRGB(140, 220, 255))
+addCounter("Rem",   Color3.fromRGB(255, 200, 100))
+addCounter("Mod",   Color3.fromRGB(180, 255, 180))
+addCounter("Int",   Color3.fromRGB(255, 150, 150))
+addCounter("Item",  Color3.fromRGB(220, 180, 255))
+addCounter("Veh",   Color3.fromRGB(255, 220, 150))
+addCounter("GUI",   Color3.fromRGB(150, 200, 255))
+addCounter("Cfg",   Color3.fromRGB(200, 200, 200))
 
--- Boutons d'action
+local counterMap = {
+    Obj="objects", Rem="remotes", Mod="modules", Int="interactions",
+    Item="items", Veh="vehicles", GUI="gui", Cfg="config",
+}
+
+-- boutons action
 local btnRow1 = make("Frame", {
-    Size = UDim2.new(1, 0, 0, 32),
-    Position = UDim2.new(0, 0, 0, 60),
+    Size = UDim2.new(1, 0, 0, 30),
+    Position = UDim2.fromOffset(0, 52),
     BackgroundTransparency = 1,
-    Parent = content,
-})
-local btnLayout1 = make("UIListLayout", {
+}, content)
+make("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
-    Padding = UDim.new(0, 6),
+    Padding = UDim.new(0, 5),
 }, btnRow1)
 
-local function makeBtn(parent, text, color, callback)
-    local btn = make("TextButton", {
-        Size = UDim2.new(0, 100, 1, 0),
+local function makeBtn(parentF, text, color, cb)
+    local b = make("TextButton", {
+        Size = UDim2.new(0, 92, 1, 0),
         BackgroundColor3 = color,
         Text = text,
         TextColor3 = Color3.new(1, 1, 1),
         TextSize = 12,
         Font = Enum.Font.GothamBold,
-        Parent = parent,
-    })
-    make("UICorner", {CornerRadius = UDim.new(0, 6)}, btn)
-    btn.MouseButton1Click:Connect(callback)
-    return btn
+    }, parentF)
+    make("UICorner", {CornerRadius = UDim.new(0, 6)}, b)
+    b.MouseButton1Click:Connect(cb)
+    return b
 end
 
-makeBtn(btnRow1, "START", Color3.fromRGB(50, 160, 70), function()
-    if not State.running then
-        task.spawn(runScan)
-    end
+makeBtn(btnRow1, "START",  Color3.fromRGB(50, 160, 70),  function()
+    if not State.running then task.spawn(runScan) end
 end)
-makeBtn(btnRow1, "STOP", Color3.fromRGB(200, 70, 70), function()
-    State.abort = true
-end)
+makeBtn(btnRow1, "STOP",   Color3.fromRGB(200, 70, 70),  function() State.abort = true end)
 makeBtn(btnRow1, "RESCAN", Color3.fromRGB(80, 100, 200), function()
-    if not State.running then
-        task.spawn(runScan)
-    end
+    if not State.running then task.spawn(runScan) end
 end)
 makeBtn(btnRow1, "EXPORT", Color3.fromRGB(150, 80, 200), function()
-    -- copie du rapport complet
-    local out = {}
-    table.insert(out, "ROBLOX GAME ANALYZER — RAPPORT COMPLET")
-    table.insert(out, tostring(game.PlaceId) .. " — " .. os.date("%d/%m/%Y %H:%M"))
-    table.insert(out, string.rep("=", 50))
+    local out = {
+        "ROBLOX GAME ANALYZER — RAPPORT",
+        game.PlaceId .. " — " .. os.date("%d/%m/%Y %H:%M"),
+        string.rep("=", 50),
+    }
     local sections = {
-        {"architecture", "ARCHITECTURE"},
-        {"objects",      "OBJETS & MODÈLES"},
-        {"items",        "ITEMS"},
-        {"vehicles",     "VÉHICULES"},
-        {"remotes",      "COMMUNICATIONS RÉSEAU"},
-        {"modules",      "SCRIPTS & MODULES"},
-        {"config",       "PARAMÈTRES"},
-        {"interactions", "INTERACTIONS"},
-        {"gui",          "INTERFACE"},
-        {"relations",    "RELATIONS"},
+        {"architecture", "ARCHITECTURE"}, {"objects", "OBJETS"},
+        {"items", "ITEMS"}, {"vehicles", "VÉHICULES"},
+        {"remotes", "REMOTES"}, {"modules", "MODULES"},
+        {"config", "PARAMÈTRES"}, {"interactions", "INTERACTIONS"},
+        {"gui", "INTERFACE"}, {"relations", "RELATIONS"},
     }
     for _, sec in ipairs(sections) do
         if #State.results[sec[1]] > 0 then
@@ -908,85 +772,77 @@ makeBtn(btnRow1, "EXPORT", Color3.fromRGB(150, 80, 200), function()
         end
     end
     local report = table.concat(out, "\n")
-    local ok = pcall(function()
-        setclipboard(report)
-    end)
+    local ok = pcall(setclipboard, report)
     if ok then
-        progLabel.Text = "Rapport complet copié (" .. #State.results.objects + #State.results.remotes + #State.results.modules .. " lignes)"
+        notify("Export", "Rapport complet copié (" .. #report .. " caractères)", 5)
+    else
+        notify("Export", "Échec copie", 5)
     end
 end)
 
--- Boutons d'export par catégorie
+-- boutons catégorie
 local btnRow2 = make("Frame", {
-    Size = UDim2.new(1, 0, 0, 32),
-    Position = UDim2.new(0, 0, 0, 96),
+    Size = UDim2.new(1, 0, 0, 30),
+    Position = UDim2.fromOffset(0, 86),
     BackgroundTransparency = 1,
-    Parent = content,
-})
+}, content)
 make("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
-    Padding = UDim.new(0, 5),
+    Padding = UDim.new(0, 4),
 }, btnRow2)
 
-local function copyCategory(category, label)
+local function copyCat(cat, label)
     return function()
-        local out = {label}
-        for _, line in ipairs(State.results[category]) do
+        local out = {label .. " (" .. #State.results[cat] .. " entrées)"}
+        for _, line in ipairs(State.results[cat]) do
             table.insert(out, line)
         end
-        local ok = pcall(function()
-            setclipboard(table.concat(out, "\n"))
-        end)
-        if ok then progLabel.Text = label .. " copié (" .. #State.results[category] .. " entrées)" end
+        local ok = pcall(setclipboard, table.concat(out, "\n"))
+        if ok then notify("Copie", label .. " copié", 3) end
     end
 end
 
-makeBtn(btnRow2, "MODÈLES",  Color3.fromRGB(60, 120, 180), copyCategory("objects", "MODÈLES"))
-makeBtn(btnRow2, "ITEMS",    Color3.fromRGB(120, 70, 180), copyCategory("items", "ITEMS"))
-makeBtn(btnRow2, "VÉHIC",    Color3.fromRGB(180, 140, 70), copyCategory("vehicles", "VÉHICULES"))
-makeBtn(btnRow2, "REMOTES",  Color3.fromRGB(200, 130, 60), copyCategory("remotes", "REMOTES"))
-makeBtn(btnRow2, "MODULES",  Color3.fromRGB(80, 160, 100), copyCategory("modules", "MODULES"))
-makeBtn(btnRow2, "PARAM",    Color3.fromRGB(120, 120, 130), copyCategory("config", "PARAMÈTRES"))
-makeBtn(btnRow2, "INTERACT", Color3.fromRGB(180, 80, 80), copyCategory("interactions", "INTERACTIONS"))
+makeBtn(btnRow2, "MOD", Color3.fromRGB(60, 120, 180),  copyCat("objects", "MODÈLES"))
+makeBtn(btnRow2, "ITM", Color3.fromRGB(120, 70, 180),  copyCat("items", "ITEMS"))
+makeBtn(btnRow2, "VEH", Color3.fromRGB(180, 140, 70),  copyCat("vehicles", "VÉHICULES"))
+makeBtn(btnRow2, "REM", Color3.fromRGB(200, 130, 60),  copyCat("remotes", "REMOTES"))
+makeBtn(btnRow2, "MDL", Color3.fromRGB(80, 160, 100),  copyCat("modules", "MODULES"))
+makeBtn(btnRow2, "CFG", Color3.fromRGB(120, 120, 130), copyCat("config", "PARAMÈTRES"))
+makeBtn(btnRow2, "INT", Color3.fromRGB(180, 80, 80),   copyCat("interactions", "INTERACTIONS"))
 
--- Barre de recherche
+-- recherche
 local searchBar = make("TextBox", {
-    Size = UDim2.new(1, 0, 0, 28),
-    Position = UDim2.new(0, 0, 0, 134),
+    Size = UDim2.new(1, 0, 0, 26),
+    Position = UDim2.fromOffset(0, 120),
     BackgroundColor3 = Color3.fromRGB(40, 40, 55),
     Text = "",
-    PlaceholderText = "Rechercher (nom ou classe)...",
+    PlaceholderText = "Rechercher...",
     PlaceholderColor3 = Color3.fromRGB(130, 130, 150),
     TextColor3 = Color3.fromRGB(230, 230, 240),
-    TextSize = 13,
+    TextSize = 12,
     Font = Enum.Font.Gotham,
     ClearTextOnFocus = false,
-    Parent = content,
-})
-make("UICorner", {CornerRadius = UDim.new(0, 7)}, searchBar)
+}, content)
+make("UICorner", {CornerRadius = UDim.new(0, 6)}, searchBar)
 searchBar:GetPropertyChangedSignal("Text"):Connect(function()
     State.search = searchBar.Text
 end)
 
--- Zone d'affichage des résultats
+-- résultats
 local resultsFrame = make("ScrollingFrame", {
-    Size = UDim2.new(1, 0, 1, -170),
-    Position = UDim2.new(0, 0, 0, 168),
+    Size = UDim2.new(1, 0, 1, -152),
+    Position = UDim2.fromOffset(0, 150),
     BackgroundColor3 = Color3.fromRGB(25, 25, 35),
     CanvasSize = UDim2.new(0, 0, 0, 0),
     ScrollBarThickness = 4,
     BorderSizePixel = 0,
-    Parent = content,
-})
+}, content)
 make("UICorner", {CornerRadius = UDim.new(0, 8)}, resultsFrame)
-local resultsLayout = make("UIListLayout", {
-    Padding = UDim.new(0, 4),
-}, resultsFrame)
+make("UIListLayout", {Padding = UDim.new(0, 3)}, resultsFrame)
 
-local function refreshResults()
-    -- vider
-    for _, child in ipairs(resultsFrame:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
+function refreshResults()
+    for _, ch in ipairs(resultsFrame:GetChildren()) do
+        if ch:IsA("TextLabel") then ch:Destroy() end
     end
     local lines = {}
     for cat, list in pairs(State.results) do
@@ -997,66 +853,31 @@ local function refreshResults()
             end
         end
     end
-    -- limiter pour la performance mobile
-    local maxShown = 120
+    local maxShown = 150
     for i, entry in ipairs(lines) do
         if i > maxShown then break end
         make("TextLabel", {
-            Size = UDim2.new(1, -8, 0, 16),
+            Size = UDim2.new(1, -8, 0, 15),
             BackgroundTransparency = 1,
             Text = entry[1],
             TextColor3 = entry[2],
-            TextSize = 10,
+            TextSize = 9,
             Font = Enum.Font.Code,
             TextXAlignment = Enum.TextXAlignment.Left,
             TextTruncate = Enum.TextTruncate.AtEnd,
-            Parent = resultsFrame,
-        })
+        }, resultsFrame)
     end
-    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, #lines * 20)
+    resultsFrame.CanvasSize = UDim2.new(0, 0, 0, #lines * 18)
 end
 
--- Mise à jour de la barre de progression
+-- update progress + compteurs
 function GUI.updateProgress(pct, label)
     progFill.Size = UDim2.new(pct / 100, 0, 1, 0)
     progLabel.Text = string.format("%s — %d%% (%d objets)", label or "", pct, State.scanned)
     for name, lbl in pairs(counterLabels) do
-        local key = string.lower(string.sub(name, 1, 5))
-        local map = {
-            Objets="objects", Remotes="remotes", Modules="modules",
-            Interact="interactions", Items="items", Vehic="vehicles",
-            GUI="gui", Config="config",
-        }
-        local cat = map[name]
-        if cat then
-            lbl.Text = name .. ": " .. State.counts[cat]
-        end
+        local cat = counterMap[name]
+        if cat then lbl.Text = name .. ": " .. State.counts[cat] end
     end
 end
 
-function GUI.scanDone()
-    progFill.Size = UDim2.new(1, 0, 1, 0)
-    progLabel.Text = "Scan terminé — " .. State.scanned .. " objets analysés"
-    refreshResults()
-end
-
--- Fermer proprement
-closeBtn.MouseButton1Click:Connect(function()
-    State.abort = true
-    State.running = false
-    task.wait(0.3)
-    pcall(function() gui:Destroy() end)
-end)
-
--- rafraîchissement périodique des compteurs pendant le scan
-task.spawn(function()
-    while gui.Parent do
-        task.wait(0.5)
-        if State.running then
-            local pct = State.total > 0 and math.floor((State.scanned / State.total) * 100) or 0
-            GUI.updateProgress(math.min(pct, 100), "Scan en cours")
-        end
-    end
-end)
-
-progLabel.Text = "Prêt — appuie START pour lancer l'analyse"
+notify("Game Analyzer", "GUI chargé — appuie START", 5)
